@@ -1,4 +1,3 @@
-import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
@@ -13,6 +12,7 @@ enum AuthMode { pangolin, console }
 
 enum AppTab { servers, harnesses, tasks }
 
+@immutable
 class ServerConfig {
   const ServerConfig({
     required this.name,
@@ -34,42 +34,81 @@ class ServerConfig {
   final String? password;
   final String? cookie;
 
-  @override
-  bool operator ==(Object other) =>
-      identical(this, other) ||
-      other is ServerConfig &&
-          runtimeType == other.runtimeType &&
-          name == other.name &&
-          baseUrl == other.baseUrl &&
-          authMode == other.authMode &&
-          accessTokenId == other.accessTokenId &&
-          accessToken == other.accessToken &&
-          username == other.username &&
-          password == other.password &&
-          cookie == other.cookie;
+  ServerConfig copyWith({
+    String? name,
+    String? baseUrl,
+    AuthMode? authMode,
+    String? accessTokenId,
+    String? accessToken,
+    String? username,
+    String? password,
+    String? cookie,
+  }) {
+    return ServerConfig(
+      name: name ?? this.name,
+      baseUrl: baseUrl ?? this.baseUrl,
+      authMode: authMode ?? this.authMode,
+      accessTokenId: accessTokenId ?? this.accessTokenId,
+      accessToken: accessToken ?? this.accessToken,
+      username: username ?? this.username,
+      password: password ?? this.password,
+      cookie: cookie ?? this.cookie,
+    );
+  }
 
   @override
-  int get hashCode => Object.hash(name, baseUrl, authMode, accessTokenId, accessToken, username, password, cookie);
+  bool operator ==(Object other) {
+    return identical(this, other) ||
+        other is ServerConfig &&
+            runtimeType == other.runtimeType &&
+            name == other.name &&
+            baseUrl == other.baseUrl &&
+            authMode == other.authMode &&
+            accessTokenId == other.accessTokenId &&
+            accessToken == other.accessToken &&
+            username == other.username &&
+            password == other.password &&
+            cookie == other.cookie;
+  }
+
+  @override
+  int get hashCode => Object.hash(
+    name,
+    baseUrl,
+    authMode,
+    accessTokenId,
+    accessToken,
+    username,
+    password,
+    cookie,
+  );
 }
 
+@immutable
 class Harness {
-  const Harness({required this.id, required this.name, this.baseLabel, this.defaultModel});
+  const Harness({
+    required this.id,
+    required this.name,
+    required this.baseLabel,
+    required this.defaultModel,
+  });
 
   final String id;
   final String name;
-  final String? baseLabel;
-  final String? defaultModel;
+  final String baseLabel;
+  final String defaultModel;
 
   factory Harness.fromJson(Map<String, dynamic> json) {
     return Harness(
       id: '${json['id'] ?? json['harness_id'] ?? json['name'] ?? ''}',
       name: '${json['name'] ?? json['label'] ?? json['id'] ?? ''}',
-      baseLabel: json['base_label'] as String?,
-      defaultModel: json['default_model'] as String?,
+      baseLabel: '${json['base_label'] ?? json['baseLabel'] ?? '-'}',
+      defaultModel: '${json['default_model'] ?? json['defaultModel'] ?? '-'}',
     );
   }
 }
 
+@immutable
 class ResponseRecord {
   const ResponseRecord({
     required this.prompt,
@@ -81,22 +120,37 @@ class ResponseRecord {
   final String prompt;
   final String output;
   final String responseId;
-  final String? sessionId;
+  final String sessionId;
 }
 
+@immutable
 class ThreadState {
-  const ThreadState({this.records = const []});
+  const ThreadState({this.records = const <ResponseRecord>[]});
 
   final List<ResponseRecord> records;
 
-  ThreadState append(ResponseRecord record) => ThreadState(records: [...records, record]);
+  ThreadState append(ResponseRecord record) {
+    return ThreadState(records: <ResponseRecord>[...records, record]);
+  }
+
+  ResponseRecord? get latestOrNull => records.isEmpty ? null : records.last;
+}
+
+@immutable
+class AppError implements Exception {
+  const AppError(this.message);
+
+  final String message;
+
+  @override
+  String toString() => message;
 }
 
 class InMemoryServerStore {
   const InMemoryServerStore();
 
-  static final List<ServerConfig> _defaults = [
-    const ServerConfig(
+  static const List<ServerConfig> _defaults = <ServerConfig>[
+    ServerConfig(
       name: 'HarnessRouter demo',
       baseUrl: 'https://harnessrouter.borges.dev',
       authMode: AuthMode.pangolin,
@@ -106,29 +160,66 @@ class InMemoryServerStore {
   List<ServerConfig> load() => List<ServerConfig>.unmodifiable(_defaults);
 }
 
-final serverStoreProvider = Provider<InMemoryServerStore>((ref) => const InMemoryServerStore());
-final serversProvider = StateNotifierProvider<ServersController, List<ServerConfig>>(
-  (ref) => ServersController(),
-);
+final serverStoreProvider = Provider<InMemoryServerStore>((ref) {
+  return const InMemoryServerStore();
+});
+
+final uhpServiceProvider = Provider<UhpService>((ref) {
+  return UhpService(ref.watch(httpClientProvider));
+});
+
+final httpClientProvider = Provider<http.Client>((ref) {
+  final client = http.Client();
+  ref.onDispose(client.close);
+  return client;
+});
+
+final snackbarControllerProvider = Provider<SnackbarController>((ref) {
+  return SnackbarController();
+});
+
+final appScaffoldMessengerKeyProvider =
+    Provider<GlobalKey<ScaffoldMessengerState>>((ref) {
+      return GlobalKey<ScaffoldMessengerState>();
+    });
+
+final serversProvider =
+    StateNotifierProvider<ServersController, List<ServerConfig>>((ref) {
+      return ServersController(ref.watch(serverStoreProvider));
+    });
+
 final selectedServerProvider = StateProvider<ServerConfig?>((ref) => null);
 final selectedTabProvider = StateProvider<AppTab>((ref) => AppTab.servers);
-final harnessesProvider = StateNotifierProvider<HarnessesController, AsyncValue<List<Harness>>>((ref) {
-  return HarnessesController(ref);
-});
 final selectedHarnessProvider = StateProvider<Harness?>((ref) => null);
-final taskBusyProvider = StateProvider<bool>((ref) => false);
+final harnessesProvider =
+    StateNotifierProvider<HarnessesController, AsyncValue<List<Harness>>>((
+      ref,
+    ) {
+      return HarnessesController(ref);
+    });
 final threadProvider = StateProvider<ThreadState>((ref) => const ThreadState());
+final taskBusyProvider = StateProvider<bool>((ref) => false);
 
 class ServersController extends StateNotifier<List<ServerConfig>> {
-  ServersController() : super(const InMemoryServerStore().load());
+  ServersController(InMemoryServerStore store) : super(store.load());
 
   void upsert(ServerConfig config) {
-    final next = [...state];
-    final index = next.indexWhere((server) => server.name == config.name);
+    final trimmedName = config.name.trim();
+    final trimmedBaseUrl = normalizeBaseUrl(config.baseUrl);
+    if (trimmedName.isEmpty || trimmedBaseUrl.isEmpty) {
+      return;
+    }
+
+    final normalized = config.copyWith(
+      name: trimmedName,
+      baseUrl: trimmedBaseUrl,
+    );
+    final next = <ServerConfig>[...state];
+    final index = next.indexWhere((server) => server.name == normalized.name);
     if (index == -1) {
-      next.add(config);
+      next.add(normalized);
     } else {
-      next[index] = config;
+      next[index] = normalized;
     }
     state = List<ServerConfig>.unmodifiable(next);
   }
@@ -141,16 +232,32 @@ class HarnessesController extends StateNotifier<AsyncValue<List<Harness>>> {
 
   Future<void> refresh() async {
     final server = _ref.read(selectedServerProvider);
-    if (server == null) return;
+    if (server == null) {
+      throw const AppError('Select a server first.');
+    }
     state = const AsyncLoading();
     try {
-      final client = ApiClient(server);
-      final list = await client.fetchHarnesses();
-      state = AsyncData(list);
+      final harnesses = await _ref
+          .read(uhpServiceProvider)
+          .fetchHarnesses(server);
+      state = AsyncData(harnesses);
     } catch (error, stackTrace) {
       state = AsyncError(error, stackTrace);
       rethrow;
     }
+  }
+}
+
+class SnackbarController {
+  void show(WidgetRef ref, String message) {
+    final messengerKey = ref.read(appScaffoldMessengerKeyProvider);
+    final messenger = messengerKey.currentState;
+    if (messenger == null) {
+      return;
+    }
+    messenger
+      ..hideCurrentSnackBar()
+      ..showSnackBar(SnackBar(content: Text(message)));
   }
 }
 
@@ -164,98 +271,245 @@ class ApiException implements Exception {
   String toString() => 'HTTP $statusCode: $body';
 }
 
-class ApiClient {
-  ApiClient(this.server, {http.Client? client}) : _client = client ?? http.Client();
+class ResponseDraft {
+  const ResponseDraft({
+    required this.input,
+    this.harnessId,
+    this.previousResponseId,
+  });
 
-  final ServerConfig server;
+  final String input;
+  final String? harnessId;
+  final String? previousResponseId;
+}
+
+
+class UhpService {
+  const UhpService(this._client);
+
   final http.Client _client;
-  static const _timeout = Duration(seconds: 300);
+  static const Duration timeout = Duration(seconds: 300);
 
-  Map<String, String> _headers() {
-    final headers = <String, String>{'Content-Type': 'application/json'};
-    if (server.authMode == AuthMode.pangolin) {
-      if (server.accessTokenId != null) headers['P-Access-Token-Id'] = server.accessTokenId!;
-      if (server.accessToken != null) headers['P-Access-Token'] = server.accessToken!;
-    } else if (server.cookie != null && server.cookie!.isNotEmpty) {
-      headers['Cookie'] = server.cookie!;
+  Future<ServerConfig> login(ServerConfig server) async {
+    if (server.authMode != AuthMode.console) {
+      return server;
     }
-    return headers;
-  }
+    final username = server.username?.trim() ?? '';
+    final password = server.password ?? '';
+    if (username.isEmpty || password.isEmpty) {
+      throw const AppError('Console login requires username and password.');
+    }
 
-  Uri _uri(String path) => Uri.parse('${server.baseUrl}$path');
+    final response = await _client
+        .post(
+          buildApiUri(server.baseUrl, '/api/selfhost/login'),
+          headers: const <String, String>{'Content-Type': 'application/json'},
+          body: jsonEncode(<String, dynamic>{
+            'username': username,
+            'password': password,
+          }),
+        )
+        .timeout(timeout);
 
-  Future<List<Harness>> fetchHarnesses() async {
-    final response = await _client.get(_uri('/api/harness/v1/harnesses'), headers: _headers()).timeout(_timeout);
     if (response.statusCode < 200 || response.statusCode >= 300) {
       throw ApiException(response.statusCode, extractErrorBody(response.body));
     }
-    final data = jsonDecode(response.body) as Map<String, dynamic>;
-    final items = (data['data'] as List<dynamic>? ?? data['harnesses'] as List<dynamic>? ?? const []);
-    return items.map((item) => Harness.fromJson(Map<String, dynamic>.from(item as Map))).toList(growable: false);
+
+    final cookie = extractCookie(response.headers);
+    if (cookie.isEmpty) {
+      throw const AppError('Console login succeeded without Set-Cookie.');
+    }
+    return server.copyWith(cookie: cookie);
   }
 
-  Future<String> testConnection() async => '${(await fetchHarnesses()).length} harnesses';
+  Future<String> testConnection(ServerConfig server) async {
+    final authedServer = await _ensureAuthenticated(server);
+    final harnesses = await fetchHarnesses(authedServer);
+    return '${harnesses.length} harnesses';
+  }
 
-  Future<ResponseRecord> createResponse({
-    required String input,
-    String? previousResponseId,
-    String? harnessId,
-  }) async {
-    final payload = <String, dynamic>{'input': input, 'stream': false};
-    if (harnessId != null) {
-      payload['metadata'] = {'harness_id': harnessId};
-    }
-    if (previousResponseId != null) {
-      payload['previous_response_id'] = previousResponseId;
-    }
-    final response = await _client.post(
-      _uri('/api/harness/v1/responses'),
-      headers: _headers(),
-      body: jsonEncode(payload),
-    ).timeout(_timeout);
+  Future<List<Harness>> fetchHarnesses(ServerConfig server) async {
+    final response = await _client
+        .get(
+          buildApiUri(server.baseUrl, '/api/harness/v1/harnesses'),
+          headers: buildAuthHeaders(server),
+        )
+        .timeout(timeout);
+
     if (response.statusCode < 200 || response.statusCode >= 300) {
       throw ApiException(response.statusCode, extractErrorBody(response.body));
     }
-    final data = jsonDecode(response.body) as Map<String, dynamic>;
+
+    final decoded = jsonDecode(response.body);
+    if (decoded is! Map<String, dynamic>) {
+      throw const AppError('Unexpected harness response shape.');
+    }
+    final rawItems = extractHarnessList(decoded);
+    return rawItems
+        .map((item) => Harness.fromJson(Map<String, dynamic>.from(item as Map)))
+        .toList(growable: false);
+  }
+
+  Future<ResponseRecord> createResponse(
+    ServerConfig server,
+    ResponseDraft draft,
+  ) async {
+    final response = await _client
+        .post(
+          buildApiUri(server.baseUrl, '/api/harness/v1/responses'),
+          headers: buildAuthHeaders(server),
+          body: jsonEncode(buildResponseRequestBody(draft)),
+        )
+        .timeout(timeout);
+
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      throw ApiException(response.statusCode, extractErrorBody(response.body));
+    }
+
+    final decoded = jsonDecode(response.body);
+    if (decoded is! Map<String, dynamic>) {
+      throw const AppError('Unexpected response payload.');
+    }
     return ResponseRecord(
-      prompt: input,
-      output: extractAssistantText(data),
-      responseId: '${data['id'] ?? ''}',
-      sessionId: data['metadata'] is Map ? '${(data['metadata'] as Map)['session_id'] ?? ''}' : null,
+      prompt: draft.input,
+      output: extractAssistantText(decoded),
+      responseId: '${decoded['id'] ?? ''}',
+      sessionId: extractSessionId(decoded),
     );
   }
+
+  Future<ServerConfig> _ensureAuthenticated(ServerConfig server) async {
+    if (server.authMode == AuthMode.console &&
+        (server.cookie == null || server.cookie!.isEmpty)) {
+      return login(server);
+    }
+    return server;
+  }
+}
+
+Map<String, String> buildAuthHeaders(ServerConfig server) {
+  final headers = <String, String>{'Content-Type': 'application/json'};
+  switch (server.authMode) {
+    case AuthMode.pangolin:
+      final tokenId = server.accessTokenId?.trim() ?? '';
+      final token = server.accessToken?.trim() ?? '';
+      if (tokenId.isNotEmpty) {
+        headers['P-Access-Token-Id'] = tokenId;
+      }
+      if (token.isNotEmpty) {
+        headers['P-Access-Token'] = token;
+      }
+      break;
+    case AuthMode.console:
+      final cookie = server.cookie?.trim() ?? '';
+      if (cookie.isNotEmpty) {
+        headers['Cookie'] = cookie;
+      }
+      break;
+  }
+  return headers;
+}
+
+Uri buildApiUri(String baseUrl, String path) {
+  return Uri.parse('${normalizeBaseUrl(baseUrl)}$path');
+}
+
+String normalizeBaseUrl(String value) {
+  final trimmed = value.trim();
+  if (trimmed.endsWith('/')) {
+    return trimmed.substring(0, trimmed.length - 1);
+  }
+  return trimmed;
+}
+
+List<dynamic> extractHarnessList(Map<String, dynamic> payload) {
+  final data = payload['data'];
+  if (data is List<dynamic>) {
+    return data;
+  }
+  final harnesses = payload['harnesses'];
+  if (harnesses is List<dynamic>) {
+    return harnesses;
+  }
+  return const <dynamic>[];
 }
 
 String extractErrorBody(String body) {
   try {
     final decoded = jsonDecode(body);
     if (decoded is Map<String, dynamic>) {
-      return '${decoded['error'] ?? decoded['detail'] ?? body}';
+      final error = decoded['error'];
+      if (error is String && error.isNotEmpty) {
+        return error;
+      }
+      final detail = decoded['detail'];
+      if (detail is String && detail.isNotEmpty) {
+        return detail;
+      }
     }
-  } catch (_) {}
-  return body;
+  } catch (_) {
+    return body.length > 280 ? '${body.substring(0, 280)}…' : body;
+  }
+  return body.length > 280 ? '${body.substring(0, 280)}…' : body;
 }
 
-String extractAssistantText(Map<String, dynamic> data) {
-  final outputs = data['output'] as List<dynamic>? ?? const [];
-  final buffer = StringBuffer();
-  for (final item in outputs) {
-    if (item is! Map) continue;
-    if ('${item['role'] ?? ''}' != 'assistant') continue;
-    final content = item['content'] as List<dynamic>? ?? const [];
+String extractAssistantText(Map<String, dynamic> payload) {
+  final output = payload['output'];
+  if (output is! List<dynamic>) {
+    return '';
+  }
+
+  final lines = <String>[];
+  for (final item in output) {
+    if (item is! Map) {
+      continue;
+    }
+    if ('${item['role'] ?? ''}' != 'assistant') {
+      continue;
+    }
+    final content = item['content'];
+    if (content is! List<dynamic>) {
+      continue;
+    }
     for (final block in content) {
-      if (block is Map && block['text'] != null) {
-        if (buffer.isNotEmpty) buffer.write('\n');
-        buffer.write(block['text']);
+      if (block is! Map) {
+        continue;
+      }
+      final text = block['text'];
+      if (text is String && text.isNotEmpty) {
+        lines.add(text);
       }
     }
   }
-  return buffer.toString();
+  return lines.join('\n');
 }
 
-Map<String, dynamic> buildContinuationBody({required String input, required String previousResponseId, String? harnessId}) {
-  final body = <String, dynamic>{'input': input, 'previous_response_id': previousResponseId};
-  if (harnessId != null) body['metadata'] = {'harness_id': harnessId};
+String extractSessionId(Map<String, dynamic> payload) {
+  final metadata = payload['metadata'];
+  if (metadata is Map) {
+    return '${metadata['session_id'] ?? ''}';
+  }
+  return '';
+}
+
+String extractCookie(Map<String, String> headers) {
+  final raw = headers['set-cookie'] ?? headers['Set-Cookie'];
+  if (raw == null || raw.isEmpty) {
+    return '';
+  }
+  final firstCookie = raw.split(',').first;
+  return firstCookie.split(';').first.trim();
+}
+
+Map<String, dynamic> buildResponseRequestBody(ResponseDraft draft) {
+  final body = <String, dynamic>{'input': draft.input, 'stream': false};
+  if (draft.harnessId != null && draft.harnessId!.isNotEmpty) {
+    body['metadata'] = <String, dynamic>{'harness_id': draft.harnessId};
+  }
+  if (draft.previousResponseId != null &&
+      draft.previousResponseId!.isNotEmpty) {
+    body['previous_response_id'] = draft.previousResponseId;
+  }
   return body;
 }
 
@@ -264,10 +518,11 @@ class UhpApp extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final tab = ref.watch(selectedTabProvider);
+    final selectedTab = ref.watch(selectedTabProvider);
     return MaterialApp(
       debugShowCheckedModeBanner: false,
       title: 'UHP Android',
+      scaffoldMessengerKey: ref.watch(appScaffoldMessengerKeyProvider),
       theme: ThemeData(
         useMaterial3: true,
         brightness: Brightness.dark,
@@ -276,16 +531,31 @@ class UhpApp extends ConsumerWidget {
       home: Scaffold(
         appBar: AppBar(title: const Text('UHP Android')),
         body: IndexedStack(
-          index: tab.index,
-          children: const [ServersScreen(), HarnessesScreen(), TasksScreen()],
+          index: selectedTab.index,
+          children: const <Widget>[
+            ServersScreen(),
+            HarnessesScreen(),
+            TasksScreen(),
+          ],
         ),
         bottomNavigationBar: NavigationBar(
-          selectedIndex: tab.index,
-          onDestinationSelected: (index) => ref.read(selectedTabProvider.notifier).state = AppTab.values[index],
-          destinations: const [
-            NavigationDestination(icon: Icon(Icons.storage_outlined), label: 'Servers'),
-            NavigationDestination(icon: Icon(Icons.account_tree_outlined), label: 'Harnesses'),
-            NavigationDestination(icon: Icon(Icons.task_alt_outlined), label: 'Tasks'),
+          selectedIndex: selectedTab.index,
+          onDestinationSelected: (index) {
+            ref.read(selectedTabProvider.notifier).state = AppTab.values[index];
+          },
+          destinations: const <NavigationDestination>[
+            NavigationDestination(
+              icon: Icon(Icons.storage_outlined),
+              label: 'Servers',
+            ),
+            NavigationDestination(
+              icon: Icon(Icons.account_tree_outlined),
+              label: 'Harnesses',
+            ),
+            NavigationDestination(
+              icon: Icon(Icons.task_alt_outlined),
+              label: 'Tasks',
+            ),
           ],
         ),
       ),
@@ -301,102 +571,225 @@ class ServersScreen extends ConsumerStatefulWidget {
 }
 
 class _ServersScreenState extends ConsumerState<ServersScreen> {
-  final _name = TextEditingController();
-  final _url = TextEditingController();
-  final _tokenId = TextEditingController();
-  final _token = TextEditingController();
-  final _username = TextEditingController();
-  final _password = TextEditingController();
+  final TextEditingController _nameController = TextEditingController();
+  final TextEditingController _urlController = TextEditingController(
+    text: 'https://harnessrouter.borges.dev',
+  );
+  final TextEditingController _tokenIdController = TextEditingController();
+  final TextEditingController _tokenController = TextEditingController();
+  final TextEditingController _usernameController = TextEditingController();
+  final TextEditingController _passwordController = TextEditingController();
+  bool _testing = false;
   AuthMode _mode = AuthMode.pangolin;
 
   @override
   void dispose() {
-    _name.dispose();
-    _url.dispose();
-    _tokenId.dispose();
-    _token.dispose();
-    _username.dispose();
-    _password.dispose();
+    _nameController.dispose();
+    _urlController.dispose();
+    _tokenIdController.dispose();
+    _tokenController.dispose();
+    _usernameController.dispose();
+    _passwordController.dispose();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
     final servers = ref.watch(serversProvider);
-    final selected = ref.watch(selectedServerProvider);
+    final selectedServer = ref.watch(selectedServerProvider);
+
     return ListView(
       padding: const EdgeInsets.all(16),
-      children: [
-        const Text('Servers', style: TextStyle(fontSize: 22, fontWeight: FontWeight.w600)),
+      children: <Widget>[
+        Text(
+          'In-memory profiles only. Process death clears history and server edits.',
+          style: Theme.of(context).textTheme.bodySmall,
+        ),
+        const SizedBox(height: 16),
+        const Text(
+          'Saved servers',
+          style: TextStyle(fontSize: 22, fontWeight: FontWeight.w600),
+        ),
         const SizedBox(height: 12),
-        ...servers.map((server) => Card(
-          child: ListTile(
-            title: Text(server.name),
-            subtitle: Text('${server.baseUrl}\n${server.authMode.name}'),
-            isThreeLine: true,
-            trailing: IconButton(
-              icon: Icon(selected == server ? Icons.radio_button_checked : Icons.radio_button_off),
-              onPressed: () => ref.read(selectedServerProvider.notifier).state = server,
+        if (servers.isEmpty)
+          const Card(
+            child: Padding(
+              padding: EdgeInsets.all(16),
+              child: Text('No saved servers yet.'),
             ),
-            onTap: () => ref.read(selectedServerProvider.notifier).state = server,
+          )
+        else
+          ListView.builder(
+            shrinkWrap: true,
+            physics: const NeverScrollableScrollPhysics(),
+            itemCount: servers.length,
+            itemBuilder: (context, index) {
+              final server = servers[index];
+              final isSelected = selectedServer == server;
+              return Card(
+                child: ListTile(
+                  title: Text(server.name),
+                  subtitle: Text('${server.baseUrl}\n${server.authMode.name}'),
+                  isThreeLine: true,
+                  trailing: Icon(
+                    isSelected
+                        ? Icons.radio_button_checked
+                        : Icons.radio_button_off,
+                  ),
+                  onTap: () {
+                    ref.read(selectedServerProvider.notifier).state = server;
+                  },
+                ),
+              );
+            },
           ),
-        )),
+        const SizedBox(height: 16),
+        const Text(
+          'Add or update server',
+          style: TextStyle(fontSize: 22, fontWeight: FontWeight.w600),
+        ),
         const SizedBox(height: 12),
         DropdownButtonFormField<AuthMode>(
           initialValue: _mode,
-          items: const [
-            DropdownMenuItem(value: AuthMode.pangolin, child: Text('Pangolin machine token')),
-            DropdownMenuItem(value: AuthMode.console, child: Text('Console login cookie')),
-          ],
-          onChanged: (value) => setState(() => _mode = value ?? AuthMode.pangolin),
           decoration: const InputDecoration(labelText: 'Auth mode'),
+          items: const <DropdownMenuItem<AuthMode>>[
+            DropdownMenuItem(
+              value: AuthMode.pangolin,
+              child: Text('Pangolin machine token'),
+            ),
+            DropdownMenuItem(
+              value: AuthMode.console,
+              child: Text('Console login cookie'),
+            ),
+          ],
+          onChanged: (value) {
+            setState(() {
+              _mode = value ?? AuthMode.pangolin;
+            });
+          },
         ),
-        TextField(controller: _name, decoration: const InputDecoration(labelText: 'Name')),
-        TextField(controller: _url, decoration: const InputDecoration(labelText: 'Base URL')),
-        if (_mode == AuthMode.pangolin) ...[
-          TextField(controller: _tokenId, decoration: const InputDecoration(labelText: 'P-Access-Token-Id')),
-          TextField(controller: _token, decoration: const InputDecoration(labelText: 'P-Access-Token')),
-        ] else ...[
-          TextField(controller: _username, decoration: const InputDecoration(labelText: 'Username')),
-          TextField(controller: _password, decoration: const InputDecoration(labelText: 'Password'), obscureText: true),
+        const SizedBox(height: 8),
+        TextField(
+          controller: _nameController,
+          textInputAction: TextInputAction.next,
+          decoration: const InputDecoration(labelText: 'Name'),
+        ),
+        const SizedBox(height: 8),
+        TextField(
+          controller: _urlController,
+          keyboardType: TextInputType.url,
+          textInputAction: TextInputAction.next,
+          decoration: const InputDecoration(labelText: 'Base URL'),
+        ),
+        const SizedBox(height: 8),
+        if (_mode == AuthMode.pangolin) ...<Widget>[
+          TextField(
+            controller: _tokenIdController,
+            textInputAction: TextInputAction.next,
+            decoration: const InputDecoration(labelText: 'P-Access-Token-Id'),
+          ),
+          const SizedBox(height: 8),
+          TextField(
+            controller: _tokenController,
+            decoration: const InputDecoration(labelText: 'P-Access-Token'),
+          ),
+        ] else ...<Widget>[
+          TextField(
+            controller: _usernameController,
+            textInputAction: TextInputAction.next,
+            decoration: const InputDecoration(labelText: 'Username'),
+          ),
+          const SizedBox(height: 8),
+          TextField(
+            controller: _passwordController,
+            obscureText: true,
+            decoration: const InputDecoration(labelText: 'Password'),
+          ),
         ],
         const SizedBox(height: 12),
-        Row(
-          children: [
+        Wrap(
+          spacing: 12,
+          runSpacing: 12,
+          children: <Widget>[
             FilledButton(
-              onPressed: () {
-                ref.read(serversProvider.notifier).upsert(ServerConfig(
-                  name: _name.text.trim(),
-                  baseUrl: _url.text.trim(),
-                  authMode: _mode,
-                  accessTokenId: _tokenId.text.trim().isEmpty ? null : _tokenId.text.trim(),
-                  accessToken: _token.text.trim().isEmpty ? null : _token.text.trim(),
-                  username: _username.text.trim().isEmpty ? null : _username.text.trim(),
-                  password: _password.text.isEmpty ? null : _password.text,
-                ));
-              },
+              onPressed: _saveServer,
               child: const Text('Save server'),
             ),
-            const SizedBox(width: 12),
             OutlinedButton(
-              onPressed: selected == null ? null : () async {
-                try {
-                  final message = await ApiClient(selected).testConnection();
-                  if (context.mounted) {
-                    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(message)));
-                  }
-                } catch (error) {
-                  if (context.mounted) {
-                    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('$error')));
-                  }
-                }
-              },
-              child: const Text('Test connection'),
+              onPressed: selectedServer == null || _testing
+                  ? null
+                  : _testConnection,
+              child: Text(_testing ? 'Testing…' : 'Test connection'),
             ),
           ],
         ),
       ],
     );
+  }
+
+  void _saveServer() {
+    final normalizedName = _nameController.text.trim();
+    if (normalizedName.isEmpty) {
+      ref.read(snackbarControllerProvider).show(ref, 'Name is required.');
+      return;
+    }
+
+    final normalizedBaseUrl = normalizeBaseUrl(_urlController.text);
+    if (normalizedBaseUrl.isEmpty) {
+      ref.read(snackbarControllerProvider).show(ref, 'Base URL is required.');
+      return;
+    }
+
+    final config = ServerConfig(
+      name: normalizedName,
+      baseUrl: normalizedBaseUrl,
+      authMode: _mode,
+      accessTokenId: _emptyToNull(_tokenIdController.text),
+      accessToken: _emptyToNull(_tokenController.text),
+      username: _emptyToNull(_usernameController.text),
+      password: _emptyToNull(_passwordController.text),
+    );
+    ref.read(serversProvider.notifier).upsert(config);
+    ref.read(selectedServerProvider.notifier).state = config;
+    ref.read(snackbarControllerProvider).show(ref, 'Saved $normalizedName.');
+  }
+
+  Future<void> _testConnection() async {
+    final selectedServer = ref.read(selectedServerProvider);
+    if (selectedServer == null) {
+      return;
+    }
+
+    setState(() {
+      _testing = true;
+    });
+    try {
+      final service = ref.read(uhpServiceProvider);
+      final authenticated = await service.login(selectedServer);
+      if (authenticated != selectedServer) {
+        ref.read(serversProvider.notifier).upsert(authenticated);
+        ref.read(selectedServerProvider.notifier).state = authenticated;
+      }
+      final message = await service.testConnection(authenticated);
+      if (mounted) {
+        ref.read(snackbarControllerProvider).show(ref, message);
+      }
+    } catch (error) {
+      if (mounted) {
+        ref.read(snackbarControllerProvider).show(ref, '$error');
+      }
+    } finally {
+      if (mounted) {
+        setState(() {
+          _testing = false;
+        });
+      }
+    }
+  }
+
+  String? _emptyToNull(String value) {
+    final trimmed = value.trim();
+    return trimmed.isEmpty ? null : trimmed;
   }
 }
 
@@ -407,52 +800,77 @@ class HarnessesScreen extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final harnesses = ref.watch(harnessesProvider);
     return RefreshIndicator(
-      onRefresh: () => ref.read(harnessesProvider.notifier).refresh(),
+      onRefresh: () => _refreshHarnesses(ref),
       child: ListView(
+        physics: const AlwaysScrollableScrollPhysics(),
         padding: const EdgeInsets.all(16),
-        children: [
-          const Text('Harnesses', style: TextStyle(fontSize: 22, fontWeight: FontWeight.w600)),
+        children: <Widget>[
+          const Text(
+            'Harnesses',
+            style: TextStyle(fontSize: 22, fontWeight: FontWeight.w600),
+          ),
           const SizedBox(height: 12),
           FilledButton(
-            onPressed: () async {
-              try {
-                await ref.read(harnessesProvider.notifier).refresh();
-              } catch (error) {
-                if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('$error')));
-              }
-            },
+            onPressed: () => _refreshHarnesses(ref),
             child: const Text('Load harnesses'),
           ),
           const SizedBox(height: 12),
           harnesses.when(
-            data: (items) => ListView.builder(
-              shrinkWrap: true,
-              physics: const NeverScrollableScrollPhysics(),
-              itemCount: items.length,
-              itemBuilder: (context, index) {
-                final harness = items[index];
-                return Card(
-                  child: ListTile(
-                    title: Text(harness.name),
-                    subtitle: Text('${harness.baseLabel ?? '-'}\n${harness.defaultModel ?? '-'}'),
-                    isThreeLine: true,
-                    onTap: () {
-                      ref.read(selectedHarnessProvider.notifier).state = harness;
-                      ref.read(selectedTabProvider.notifier).state = AppTab.tasks;
-                    },
+            data: (items) {
+              if (items.isEmpty) {
+                return const Card(
+                  child: Padding(
+                    padding: EdgeInsets.all(16),
+                    child: Text('No harnesses loaded yet.'),
                   ),
                 );
-              },
-            ),
+              }
+              return ListView.builder(
+                shrinkWrap: true,
+                physics: const NeverScrollableScrollPhysics(),
+                itemCount: items.length,
+                itemBuilder: (context, index) {
+                  final harness = items[index];
+                  return Card(
+                    child: ListTile(
+                      title: Text(harness.name),
+                      subtitle: Text(
+                        'Base label: ${harness.baseLabel}\nDefault model: ${harness.defaultModel}',
+                      ),
+                      isThreeLine: true,
+                      onTap: () {
+                        ref.read(selectedHarnessProvider.notifier).state =
+                            harness;
+                        ref.read(selectedTabProvider.notifier).state =
+                            AppTab.tasks;
+                      },
+                    ),
+                  );
+                },
+              );
+            },
             loading: () => const Padding(
               padding: EdgeInsets.all(24),
               child: Center(child: CircularProgressIndicator()),
             ),
-            error: (error, _) => Text('$error'),
+            error: (error, _) => Card(
+              child: Padding(
+                padding: const EdgeInsets.all(16),
+                child: Text('$error'),
+              ),
+            ),
           ),
         ],
       ),
     );
+  }
+
+  Future<void> _refreshHarnesses(WidgetRef ref) async {
+    try {
+      await ref.read(harnessesProvider.notifier).refresh();
+    } catch (error) {
+      ref.read(snackbarControllerProvider).show(ref, '$error');
+    }
   }
 }
 
@@ -464,7 +882,7 @@ class TasksScreen extends ConsumerStatefulWidget {
 }
 
 class _TasksScreenState extends ConsumerState<TasksScreen> {
-  final _promptController = TextEditingController();
+  final TextEditingController _promptController = TextEditingController();
 
   @override
   void dispose() {
@@ -474,79 +892,193 @@ class _TasksScreenState extends ConsumerState<TasksScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final harness = ref.watch(selectedHarnessProvider);
-    final busy = ref.watch(taskBusyProvider);
+    final selectedHarness = ref.watch(selectedHarnessProvider);
     final thread = ref.watch(threadProvider);
+    final busy = ref.watch(taskBusyProvider);
+    final latest = thread.latestOrNull;
+
     return ListView(
       padding: const EdgeInsets.all(16),
-      children: [
-        const Text('Tasks', style: TextStyle(fontSize: 22, fontWeight: FontWeight.w600)),
-        const SizedBox(height: 12),
-        Text('Selected harness: ${harness?.name ?? 'none'}'),
-        TextField(controller: _promptController, decoration: const InputDecoration(labelText: 'Prompt')),
-        const SizedBox(height: 12),
-        FilledButton(
-          onPressed: busy ? null : () async {
-            final server = ref.read(selectedServerProvider);
-            final selectedHarness = ref.read(selectedHarnessProvider);
-            if (server == null || selectedHarness == null) return;
-            ref.read(taskBusyProvider.notifier).state = true;
-            try {
-              final record = await ApiClient(server).createResponse(
-                input: _promptController.text,
-                harnessId: selectedHarness.id,
-              );
-              ref.read(threadProvider.notifier).state = thread.append(record);
-            } catch (error) {
-              if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('$error')));
-            } finally {
-              ref.read(taskBusyProvider.notifier).state = false;
-            }
-          },
-          child: Text(busy ? 'Working…' : 'Run'),
+      children: <Widget>[
+        const Text(
+          'Tasks',
+          style: TextStyle(fontSize: 22, fontWeight: FontWeight.w600),
         ),
         const SizedBox(height: 12),
-        ...thread.records.map((record) => Card(
+        Card(
           child: Padding(
-            padding: const EdgeInsets.all(12),
+            padding: const EdgeInsets.all(16),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text('Prompt: ${record.prompt}'),
-                const SizedBox(height: 8),
-                Text(record.output),
-                const SizedBox(height: 8),
-                Text('response=${record.responseId} session=${record.sessionId ?? '-'}', style: Theme.of(context).textTheme.bodySmall),
-                const SizedBox(height: 8),
-                Align(
-                  alignment: Alignment.centerRight,
-                  child: TextButton(
-                    onPressed: () async {
-                      final server = ref.read(selectedServerProvider);
-                      final selectedHarness = ref.read(selectedHarnessProvider);
-                      if (server == null || selectedHarness == null) return;
-                      ref.read(taskBusyProvider.notifier).state = true;
-                      try {
-                        final continuation = await ApiClient(server).createResponse(
-                          input: record.output,
-                          previousResponseId: record.responseId,
-                          harnessId: selectedHarness.id,
-                        );
-                        ref.read(threadProvider.notifier).state = thread.append(continuation);
-                      } catch (error) {
-                        if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('$error')));
-                      } finally {
-                        ref.read(taskBusyProvider.notifier).state = false;
-                      }
-                    },
-                    child: const Text('Continue'),
-                  ),
+              children: <Widget>[
+                Text('Selected harness: ${selectedHarness?.name ?? 'none'}'),
+                const SizedBox(height: 4),
+                Text(
+                  'Thread length: ${thread.records.length}',
+                  style: Theme.of(context).textTheme.bodySmall,
                 ),
               ],
             ),
           ),
-        )),
+        ),
+        const SizedBox(height: 12),
+        TextField(
+          controller: _promptController,
+          minLines: 3,
+          maxLines: 8,
+          decoration: const InputDecoration(labelText: 'Prompt'),
+        ),
+        const SizedBox(height: 12),
+        Wrap(
+          spacing: 12,
+          runSpacing: 12,
+          children: <Widget>[
+            FilledButton(
+              onPressed: busy ? null : _runTask,
+              child: Text(busy ? 'Working…' : 'Run task'),
+            ),
+            OutlinedButton(
+              onPressed: busy || latest == null
+                  ? null
+                  : () => _continueThread(latest),
+              child: const Text('Continue latest'),
+            ),
+          ],
+        ),
+        const SizedBox(height: 16),
+        if (thread.records.isEmpty)
+          const Card(
+            child: Padding(
+              padding: EdgeInsets.all(16),
+              child: Text('No task history yet.'),
+            ),
+          )
+        else
+          ListView.builder(
+            shrinkWrap: true,
+            physics: const NeverScrollableScrollPhysics(),
+            itemCount: thread.records.length,
+            itemBuilder: (context, index) {
+              final record = thread.records[index];
+              return Card(
+                child: Padding(
+                  padding: const EdgeInsets.all(12),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: <Widget>[
+                      Text(
+                        'Prompt',
+                        style: Theme.of(context).textTheme.labelLarge,
+                      ),
+                      const SizedBox(height: 4),
+                      Text(record.prompt),
+                      const Divider(height: 24),
+                      Text(
+                        'Assistant output',
+                        style: Theme.of(context).textTheme.labelLarge,
+                      ),
+                      const SizedBox(height: 4),
+                      SelectableText(
+                        record.output.isEmpty
+                            ? '(empty output)'
+                            : record.output,
+                      ),
+                      const SizedBox(height: 12),
+                      Text(
+                        'response_id=${record.responseId}\nsession_id=${record.sessionId.isEmpty ? '-' : record.sessionId}',
+                        style: Theme.of(context).textTheme.bodySmall,
+                      ),
+                      const SizedBox(height: 8),
+                      Align(
+                        alignment: Alignment.centerRight,
+                        child: TextButton(
+                          onPressed: busy
+                              ? null
+                              : () => _continueThread(record),
+                          child: const Text('Continue'),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              );
+            },
+          ),
       ],
     );
+  }
+
+  Future<void> _runTask() async {
+    final prompt = _promptController.text.trim();
+    if (prompt.isEmpty) {
+      ref.read(snackbarControllerProvider).show(ref, 'Enter a prompt first.');
+      return;
+    }
+
+    final server = ref.read(selectedServerProvider);
+    final harness = ref.read(selectedHarnessProvider);
+    if (server == null) {
+      ref.read(snackbarControllerProvider).show(ref, 'Select a server first.');
+      return;
+    }
+    if (harness == null) {
+      ref.read(snackbarControllerProvider).show(ref, 'Select a harness first.');
+      return;
+    }
+
+    await _submitDraft(
+      draft: ResponseDraft(input: prompt, harnessId: harness.id),
+      clearPrompt: true,
+    );
+  }
+
+  Future<void> _continueThread(ResponseRecord record) async {
+    final continuation = _promptController.text.trim();
+    if (continuation.isEmpty) {
+      ref
+          .read(snackbarControllerProvider)
+          .show(ref, 'Enter continuation input first.');
+      return;
+    }
+
+    final harness = ref.read(selectedHarnessProvider);
+    await _submitDraft(
+      draft: ResponseDraft(
+        input: continuation,
+        harnessId: harness?.id,
+        previousResponseId: record.responseId,
+      ),
+      clearPrompt: true,
+    );
+  }
+
+  Future<void> _submitDraft({
+    required ResponseDraft draft,
+    required bool clearPrompt,
+  }) async {
+    final server = ref.read(selectedServerProvider);
+    if (server == null) {
+      return;
+    }
+
+    ref.read(taskBusyProvider.notifier).state = true;
+    try {
+      final service = ref.read(uhpServiceProvider);
+      final authedServer = await service.login(server);
+      if (authedServer != server) {
+        ref.read(serversProvider.notifier).upsert(authedServer);
+        ref.read(selectedServerProvider.notifier).state = authedServer;
+      }
+      final record = await service.createResponse(authedServer, draft);
+      final currentThread = ref.read(threadProvider);
+      ref.read(threadProvider.notifier).state = currentThread.append(record);
+      if (clearPrompt) {
+        _promptController.clear();
+      }
+    } catch (error) {
+      ref.read(snackbarControllerProvider).show(ref, '$error');
+    } finally {
+      ref.read(taskBusyProvider.notifier).state = false;
+    }
   }
 }

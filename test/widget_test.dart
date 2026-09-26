@@ -3,11 +3,11 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:uhp_android/main.dart';
 
 void main() {
-  testWidgets('shows app shell', (tester) async {
+  testWidgets('renders bottom navigation destinations', (tester) async {
     await tester.pumpWidget(const ProviderScope(child: UhpApp()));
-    expect(find.text('UHP Android'), findsOneWidget);
-    expect(find.text('Servers'), findsWidgets);
-    expect(find.text('Harnesses'), findsWidgets);
-    expect(find.text('Tasks'), findsWidgets);
+
+    expect(find.text('Servers'), findsOneWidget);
+    expect(find.text('Harnesses'), findsOneWidget);
+    expect(find.text('Tasks'), findsOneWidget);
   });
 }
