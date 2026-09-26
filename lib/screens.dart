@@ -40,6 +40,31 @@ class ServersScreen extends ConsumerWidget {
                   },
           ),
         ),
+        TextButton(
+          onPressed: !profiles.hasValue
+              ? null
+              : () async {
+                  final server = ServerConfig(
+                    id: newLocalId(),
+                    name: demoServer.name,
+                    baseUrl: demoServer.baseUrl,
+                    authMode: demoServer.authMode,
+                  );
+                  try {
+                    await ref.read(serversProvider.notifier).add(server);
+                    if (context.mounted) {
+                      await Navigator.of(context).push<void>(
+                        MaterialPageRoute(
+                          builder: (_) => ServerEditor(server: server),
+                        ),
+                      );
+                    }
+                  } catch (error) {
+                    if (context.mounted) showMessage(ref, error);
+                  }
+                },
+          child: const Text('Add demo profile'),
+        ),
         Expanded(
           child: profiles.when(
             loading: () => const Center(child: Text('Loading profiles…')),
@@ -351,101 +376,6 @@ class HarnessesScreen extends ConsumerWidget {
   }
 }
 
-final unsavedThreadProvider = StateProvider<ConversationThread?>((ref) => null);
-final taskRunnerProvider = Provider<TaskRunner>(TaskRunner.new);
-
-class TaskRunner {
-  TaskRunner(this.ref);
-  final Ref ref;
-
-  Future<void> submit(String input) async {
-    if (ref.read(taskBusyProvider)) return;
-    if (ref.read(unsavedThreadProvider) != null) {
-      throw const AppError('Save the completed turn before continuing.');
-    }
-    if (input.trim().isEmpty) throw const AppError('Enter a prompt first.');
-    final thread = ref.read(threadProvider);
-    final server = thread?.server ?? ref.read(selectedServerProvider);
-    final harness = thread == null
-        ? ref.read(selectedHarnessProvider)
-        : Harness(
-            id: thread.harnessId,
-            name: thread.harnessName,
-            baseLabel: '',
-            defaultModel: thread.model ?? '',
-          );
-    if (server == null || harness == null) {
-      throw const AppError('Select a server and harness first.');
-    }
-    ref.read(taskBusyProvider.notifier).state = true;
-    try {
-      final servers = await ref.read(serversProvider.future);
-      if (!servers.any((s) => s.id == server.id)) {
-        throw const AppError(
-          'The saved server profile was deleted. This thread cannot continue.',
-        );
-      }
-      if (thread != null && (thread.lastResponseId?.isEmpty ?? true)) {
-        throw const AppError(
-          'This thread has no last assistant response ID to continue.',
-        );
-      }
-      final service = ref.read(uhpServiceProvider);
-      final authenticated =
-          server.authMode == AuthMode.console &&
-              (server.cookie?.isEmpty ?? true)
-          ? await service.login(server)
-          : server;
-      if (authenticated.cookie != server.cookie) {
-        await ref
-            .read(serversProvider.notifier)
-            .updateCookie(server, authenticated.cookie!);
-      }
-      final record = await service.createResponse(
-        authenticated,
-        ResponseDraft(
-          input: input.trim(),
-          harnessId: harness.id,
-          previousResponseId: thread?.lastResponseId,
-        ),
-      );
-      final updated = thread == null
-          ? ConversationThread.start(
-              server: authenticated,
-              harness: harness,
-              prompt: input.trim(),
-              record: record,
-            )
-          : ConversationThread(
-              id: thread.id,
-              title: thread.title,
-              server: authenticated,
-              harnessId: thread.harnessId,
-              harnessName: thread.harnessName,
-              model: thread.model,
-              createdAt: thread.createdAt,
-              updatedAt: thread.updatedAt,
-              messages: thread.messages,
-            ).appendTurn(input.trim(), record);
-      // Keep a completed turn visible on storage failure; retry only disk I/O,
-      // never repeat a potentially side-effecting HTTP request.
-      ref.read(threadProvider.notifier).state = updated;
-      ref.read(unsavedThreadProvider.notifier).state = updated;
-      await savePending();
-    } finally {
-      ref.read(taskBusyProvider.notifier).state = false;
-    }
-  }
-
-  Future<void> savePending() async {
-    final pending = ref.read(unsavedThreadProvider);
-    if (pending == null) return;
-    await ref.read(threadStoreProvider).save(pending);
-    ref.read(unsavedThreadProvider.notifier).state = null;
-    ref.invalidate(historyProvider);
-  }
-}
-
 class TasksScreen extends ConsumerStatefulWidget {
   const TasksScreen({super.key});
   @override
@@ -466,6 +396,10 @@ class _TasksScreenState extends ConsumerState<TasksScreen> {
     final harness = ref.watch(selectedHarnessProvider);
     final busy = ref.watch(taskBusyProvider);
     final unsaved = ref.watch(unsavedThreadProvider) != null;
+    final hasLiveTurn = ref.watch(
+      liveTurnProvider.select((turn) => turn != null),
+    );
+    final messages = thread?.messages ?? const <ThreadMessage>[];
     return Column(
       children: [
         Padding(
@@ -492,11 +426,16 @@ class _TasksScreenState extends ConsumerState<TasksScreen> {
                         ? null
                         : () async {
                             final runner = ref.read(taskRunnerProvider);
+                            final messenger = ref.read(
+                              appScaffoldMessengerKeyProvider,
+                            );
                             try {
                               await runner.submit(_prompt.text);
                               if (mounted) _prompt.clear();
                             } catch (error) {
-                              if (mounted) showMessage(ref, error);
+                              messenger.currentState?.showSnackBar(
+                                SnackBar(content: Text('$error')),
+                              );
                             }
                           },
                     child: Text(
@@ -507,6 +446,7 @@ class _TasksScreenState extends ConsumerState<TasksScreen> {
                           : 'Continue',
                     ),
                   ),
+                  if (busy) const StopTurnButton(),
                   TextButton(
                     onPressed: busy || unsaved
                         ? null
@@ -538,12 +478,20 @@ class _TasksScreenState extends ConsumerState<TasksScreen> {
           ),
         ),
         Expanded(
-          child: thread == null
+          child: messages.isEmpty && !hasLiveTurn
               ? const Center(child: Text('No task history yet.'))
               : ListView.builder(
-                  itemCount: thread.messages.length,
+                  reverse: true,
+                  itemCount: messages.length + (hasLiveTurn ? 1 : 0),
                   itemBuilder: (context, index) {
-                    final message = thread.messages[index];
+                    if (hasLiveTurn && index == 0) {
+                      return const ActiveTurnCard();
+                    }
+                    final message =
+                        messages[messages.length -
+                            1 -
+                            index +
+                            (hasLiveTurn ? 1 : 0)];
                     return Card(
                       child: Padding(
                         padding: const EdgeInsets.all(12),
@@ -555,11 +503,15 @@ class _TasksScreenState extends ConsumerState<TasksScreen> {
                               style: Theme.of(context).textTheme.labelLarge,
                             ),
                             SelectableText(message.text),
+                            if (message.role == 'assistant')
+                              Text(message.status.name),
                             if (message.responseId != null)
                               Text(
                                 'response_id=${message.responseId}',
                                 style: Theme.of(context).textTheme.bodySmall,
                               ),
+                            if (message.usage != null)
+                              UsageText(usage: message.usage!),
                           ],
                         ),
                       ),
@@ -570,6 +522,67 @@ class _TasksScreenState extends ConsumerState<TasksScreen> {
       ],
     );
   }
+}
+
+class ActiveTurnCard extends ConsumerWidget {
+  const ActiveTurnCard({super.key});
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final turn = ref.watch(liveTurnProvider);
+    if (turn == null) return const SizedBox.shrink();
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('user', style: Theme.of(context).textTheme.labelLarge),
+            Text(turn.input),
+            const Divider(),
+            Text(turn.stopping ? 'Stopping…' : 'assistant · running'),
+            SelectableText(turn.progress.text),
+            for (final tool in turn.progress.tools) Text('tool: $tool'),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class StopTurnButton extends ConsumerWidget {
+  const StopTurnButton({super.key});
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final stopping = ref.watch(
+      liveTurnProvider.select((turn) => turn == null || turn.stopping),
+    );
+    return OutlinedButton.icon(
+      icon: const Icon(Icons.stop),
+      label: Text(stopping ? 'Stopping…' : 'Stop'),
+      onPressed: stopping
+          ? null
+          : () async {
+              final messenger = ref.read(appScaffoldMessengerKeyProvider);
+              try {
+                await ref.read(taskRunnerProvider).cancel();
+              } catch (error) {
+                messenger.currentState?.showSnackBar(
+                  SnackBar(content: Text('$error')),
+                );
+              }
+            },
+    );
+  }
+}
+
+class UsageText extends StatelessWidget {
+  const UsageText({super.key, required this.usage});
+  final TokenUsage usage;
+  @override
+  Widget build(BuildContext context) => Text(
+    '${[if (usage.inputTokens != null) 'input: ${usage.inputTokens}', if (usage.outputTokens != null) 'output: ${usage.outputTokens}', if (usage.totalTokens != null) 'total: ${usage.totalTokens}'].join(' · ')} tokens',
+    style: Theme.of(context).textTheme.bodySmall,
+  );
 }
 
 String relativeTime(DateTime date) {

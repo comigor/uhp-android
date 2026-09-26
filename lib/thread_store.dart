@@ -6,12 +6,18 @@ class ThreadMessage {
     required this.role,
     required this.text,
     this.responseId,
+    this.sessionId,
+    this.status = TurnStatus.completed,
+    this.usage,
     required this.createdAt,
   });
 
   final String role;
   final String text;
   final String? responseId;
+  final String? sessionId;
+  final TurnStatus status;
+  final TokenUsage? usage;
   final DateTime createdAt;
 
   factory ThreadMessage.fromJson(Map<String, dynamic> json) {
@@ -23,6 +29,13 @@ class ThreadMessage {
       role: role,
       text: json['text'] as String,
       responseId: json['responseId'] as String?,
+      sessionId: json['sessionId'] as String?,
+      status: json['status'] == null
+          ? TurnStatus.completed
+          : TurnStatus.values.byName(json['status'] as String),
+      usage: json['usage'] == null
+          ? null
+          : TokenUsage.fromJson(json['usage'] as Map<String, dynamic>),
       createdAt: DateTime.parse(json['createdAt'] as String),
     );
   }
@@ -31,6 +44,9 @@ class ThreadMessage {
     'role': role,
     'text': text,
     'responseId': responseId,
+    'sessionId': sessionId,
+    'status': status.name,
+    'usage': usage?.toJson(),
     'createdAt': createdAt.toUtc().toIso8601String(),
   };
 }
@@ -92,7 +108,12 @@ class ConversationThread {
         ThreadMessage(
           role: 'assistant',
           text: record.output,
-          responseId: record.responseId,
+          responseId: record.responseId.trim().isEmpty
+              ? null
+              : record.responseId,
+          sessionId: record.sessionId,
+          status: record.status,
+          usage: record.usage,
           createdAt: now,
         ),
       ],
@@ -116,7 +137,12 @@ class ConversationThread {
         ThreadMessage(
           role: 'assistant',
           text: record.output,
-          responseId: record.responseId,
+          responseId: record.responseId.trim().isEmpty
+              ? null
+              : record.responseId,
+          sessionId: record.sessionId,
+          status: record.status,
+          usage: record.usage,
           createdAt: now,
         ),
       ],

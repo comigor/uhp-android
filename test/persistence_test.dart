@@ -138,6 +138,133 @@ void main() {
     );
 
     test(
+      'partial turns preserve status, IDs, text, and usage after reload',
+      () async {
+        const cancelled = ResponseRecord(
+          prompt: 'Cancel this turn',
+          output: 'Partially generated answer',
+          responseId: 'response-cancelled',
+          sessionId: 'session-cancelled',
+          status: TurnStatus.cancelled,
+          usage: TokenUsage(inputTokens: 12, outputTokens: 7, totalTokens: 19),
+        );
+        const interrupted = ResponseRecord(
+          prompt: 'Background this turn',
+          output: 'Another partial answer',
+          responseId: 'response-interrupted',
+          sessionId: 'session-interrupted',
+          status: TurnStatus.interrupted,
+          usage: TokenUsage(inputTokens: 20, outputTokens: 4, totalTokens: 24),
+        );
+        final thread = ConversationThread.start(
+          server: server,
+          harness: harness,
+          prompt: cancelled.prompt,
+          record: cancelled,
+        ).appendTurn(interrupted.prompt, interrupted);
+        await store.save(thread);
+
+        final reopened = ThreadStore(() async => documents);
+        final loaded = (await reopened.read(thread.id))!;
+        final assistants = loaded.messages
+            .where((message) => message.role == 'assistant')
+            .toList();
+        for (final (index, record) in [cancelled, interrupted].indexed) {
+          final message = assistants[index];
+          expect(message.text, record.output);
+          expect(message.status, record.status);
+          expect(message.responseId, record.responseId);
+          expect(message.sessionId, record.sessionId);
+          expect(message.usage?.inputTokens, record.usage!.inputTokens);
+          expect(message.usage?.outputTokens, record.usage!.outputTokens);
+          expect(message.usage?.totalTokens, record.usage!.totalTokens);
+        }
+        expect(loaded.lastResponseId, interrupted.responseId);
+      },
+    );
+
+    test(
+      'partial turn without an ID never reuses an earlier response ID',
+      () async {
+        const cancelled = ResponseRecord(
+          prompt: 'Stop before acceptance',
+          output: '',
+          responseId: '',
+          sessionId: '',
+          status: TurnStatus.cancelled,
+        );
+        const interrupted = ResponseRecord(
+          prompt: 'Interrupted before an ID',
+          output: 'Partial answer',
+          responseId: '   ',
+          sessionId: 'session-1',
+          status: TurnStatus.interrupted,
+        );
+        final started = ConversationThread.start(
+          server: server,
+          harness: harness,
+          prompt: cancelled.prompt,
+          record: cancelled,
+        );
+        await store.save(started);
+        final reopened = ThreadStore(() async => documents);
+        final loadedStart = (await reopened.read(started.id))!;
+        expect(loadedStart.messages.last.responseId, isNull);
+        expect(loadedStart.messages.last.status, TurnStatus.cancelled);
+        expect(loadedStart.lastResponseId, isNull);
+
+        final continued = loadedStart
+            .appendTurn(first.prompt, first)
+            .appendTurn(interrupted.prompt, interrupted);
+        await reopened.save(continued);
+        final restarted = ThreadStore(() async => documents);
+        final loaded = (await restarted.read(started.id))!;
+        expect(loaded.id, started.id);
+        expect(loaded.messages[3].responseId, first.responseId);
+        expect(loaded.messages.last.responseId, isNull);
+        expect(loaded.messages.last.status, TurnStatus.interrupted);
+        expect(loaded.lastResponseId, isNull);
+        final body = buildResponseRequestBody(
+          ResponseDraft(
+            input: 'Start fresh in the same thread',
+            harnessId: loaded.harnessId,
+            previousResponseId: loaded.lastResponseId,
+          ),
+        );
+        expect(body.containsKey('previous_response_id'), isFalse);
+      },
+    );
+
+    test('legacy messages without turn metadata still load', () async {
+      final thread = ConversationThread.start(
+        server: server,
+        harness: harness,
+        prompt: first.prompt,
+        record: first,
+      );
+      await store.save(thread);
+      final legacy = thread.toJson();
+      for (final message in legacy['messages'] as List) {
+        (message as Map<String, dynamic>)
+          ..remove('sessionId')
+          ..remove('status')
+          ..remove('usage');
+      }
+      await File('${documents.path}/threads/${thread.id}.json')
+          .writeAsString(jsonEncode(legacy));
+
+      final reopened = ThreadStore(() async => documents);
+      final loaded = (await reopened.read(thread.id))!;
+      expect(loaded.lastResponseId, first.responseId);
+      expect(loaded.messages.last.text, first.output);
+      for (final message in loaded.messages) {
+        expect(message.status, TurnStatus.completed);
+        expect(message.sessionId, isNull);
+        expect(message.usage, isNull);
+      }
+    });
+
+    test(
       'deletion removes the thread file and persisted index entry',
       () async {
         final removed = ConversationThread.start(

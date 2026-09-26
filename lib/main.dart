@@ -11,6 +11,8 @@ import 'package:shared_preferences/shared_preferences.dart';
 part 'server_store.dart';
 part 'thread_store.dart';
 part 'screens.dart';
+part 'streaming.dart';
+part 'turn_runner.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -20,6 +22,14 @@ void main() {
 enum AuthMode { pangolin, console }
 
 enum AppTab { servers, harnesses, tasks, history }
+
+enum TurnStatus { running, completed, cancelled, interrupted, failed }
+
+const demoServer = ServerConfig(
+  name: 'HarnessRouter demo',
+  baseUrl: 'https://your-uhp-server.example',
+  authMode: AuthMode.pangolin,
+);
 
 @immutable
 class ServerConfig {
@@ -127,12 +137,16 @@ class ResponseRecord {
     required this.output,
     required this.responseId,
     required this.sessionId,
+    this.status = TurnStatus.completed,
+    this.usage,
   });
 
   final String prompt;
   final String output;
   final String responseId;
   final String sessionId;
+  final TurnStatus status;
+  final TokenUsage? usage;
 }
 
 @immutable
@@ -321,33 +335,11 @@ class UhpService {
         .toList(growable: false);
   }
 
-  Future<ResponseRecord> createResponse(
-    ServerConfig server,
-    ResponseDraft draft,
-  ) async {
-    final response = await _client
-        .post(
-          buildApiUri(server.baseUrl, '/api/harness/v1/responses'),
-          headers: buildAuthHeaders(server),
-          body: jsonEncode(buildResponseRequestBody(draft)),
-        )
-        .timeout(timeout);
+  StreamingTurn startTurn(ServerConfig server, ResponseDraft draft) =>
+      StreamingTurn(_client, server, draft);
 
-    if (response.statusCode < 200 || response.statusCode >= 300) {
-      throw ApiException(response.statusCode, extractErrorBody(response.body));
-    }
-
-    final decoded = jsonDecode(response.body);
-    if (decoded is! Map<String, dynamic>) {
-      throw const AppError('Unexpected response payload.');
-    }
-    return ResponseRecord(
-      prompt: draft.input,
-      output: extractAssistantText(decoded),
-      responseId: '${decoded['id'] ?? ''}',
-      sessionId: extractSessionId(decoded),
-    );
-  }
+  Future<void> cancelSession(ServerConfig server, String sessionId) =>
+      sendSessionCancel(_client, server, sessionId);
 
   Future<ServerConfig> _ensureAuthenticated(ServerConfig server) async {
     if (server.authMode == AuthMode.console &&
@@ -472,8 +464,11 @@ String extractCookie(Map<String, String> headers) {
   return firstCookie.split(';').first.trim();
 }
 
-Map<String, dynamic> buildResponseRequestBody(ResponseDraft draft) {
-  final body = <String, dynamic>{'input': draft.input, 'stream': false};
+Map<String, dynamic> buildResponseRequestBody(
+  ResponseDraft draft, {
+  bool stream = false,
+}) {
+  final body = <String, dynamic>{'input': draft.input, 'stream': stream};
   if (draft.harnessId != null && draft.harnessId!.isNotEmpty) {
     body['metadata'] = <String, dynamic>{'harness_id': draft.harnessId};
   }
@@ -501,11 +496,45 @@ class UhpApp extends ConsumerWidget {
   );
 }
 
-class AppShell extends ConsumerWidget {
+class AppShell extends ConsumerStatefulWidget {
   const AppShell({super.key});
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  ConsumerState<AppShell> createState() => _AppShellState();
+}
+
+class _AppShellState extends ConsumerState<AppShell>
+    with WidgetsBindingObserver {
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.hidden ||
+        state == AppLifecycleState.paused ||
+        state == AppLifecycleState.detached) {
+      final messenger = ref.read(appScaffoldMessengerKeyProvider);
+      unawaited(
+        ref.read(taskRunnerProvider).interrupt().catchError((Object error) {
+          messenger.currentState?.showSnackBar(
+            SnackBar(content: Text('$error')),
+          );
+        }),
+      );
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
     // Start loading profiles without rendering any default or stale profiles.
     ref.read(serversProvider);
     final tab = ref.watch(selectedTabProvider);
