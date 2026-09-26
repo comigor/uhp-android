@@ -11,15 +11,15 @@ void main() {
         id: 'pangolin-server',
         name: 'Pangolin server',
         baseUrl: 'https://pangolin.example.test',
+        apiKey: 'test-api-key',
         accessTokenId: 'machine-id',
         accessToken: 'machine-secret',
       ),
       ServerConfig(
-        id: 'console-server',
-        name: 'Console server',
-        baseUrl: 'https://console.example.test',
-        username: 'alice',
-        password: 'login-secret',
+        id: 'direct-server',
+        name: 'Direct server',
+        baseUrl: 'https://direct.example.test',
+        apiKey: 'direct-api-key',
       ),
     ];
 
@@ -35,8 +35,7 @@ void main() {
       expect(restored.accessToken, profile.accessToken);
       expect(restored.toJson().containsKey('cookie'), isFalse);
       expect(restored.toJson().containsKey('authMode'), isFalse);
-      expect(restored.username, profile.username);
-      expect(restored.password, profile.password);
+      expect(restored.apiKey, profile.apiKey);
       expect(buildAuthHeaders(restored), buildAuthHeaders(profile));
     }
   });
@@ -48,8 +47,7 @@ void main() {
       id: 'server-1',
       name: 'Saved server',
       baseUrl: 'https://example.test',
-      username: 'alice',
-      password: 'saved-password',
+      apiKey: 'saved-api-key',
     );
     const harness = Harness(
       id: 'harness-1',
@@ -98,7 +96,7 @@ void main() {
 
         final loaded = (await reopened.read(thread.id))!;
         expect(loaded.server.id, server.id);
-        expect(loaded.server.password, server.password);
+        expect(loaded.server.apiKey, server.apiKey);
         expect(buildAuthHeaders(loaded.server), buildAuthHeaders(server));
         expect(loaded.harnessId, harness.id);
         expect(loaded.harnessName, harness.name);

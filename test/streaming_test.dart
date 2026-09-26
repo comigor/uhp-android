@@ -9,6 +9,7 @@ import 'package:uhp_android/main.dart';
 const server = ServerConfig(
   name: 'demo',
   baseUrl: 'https://example.test',
+  apiKey: 'test-api-key',
   accessTokenId: 'token-id',
   accessToken: 'secret',
 );
@@ -238,10 +239,10 @@ void main() {
       await expectLater(
         StreamingTurn(client, server, draft).run(onProgress: (_) {}),
         throwsA(
-          isA<AppError>().having(
-            (error) => error.message,
-            'message',
-            contains('403'),
+          isA<ApiException>().having(
+            (error) => error.statusCode,
+            'status',
+            403,
           ),
         ),
       );

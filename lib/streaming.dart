@@ -173,6 +173,8 @@ class StreamingTurn {
       ]);
     } on AppError {
       rethrow;
+    } on ApiException {
+      rethrow;
     } catch (error) {
       throw AppError(error.toString());
     } finally {

@@ -26,6 +26,70 @@ void main() {
   );
 
   test(
+    'legacy profiles require a key and discard obsolete fields on save',
+    () async {
+      final legacy = [
+        for (final modeField in ['authMode', 'mode'])
+          for (final mode in ['pangolin', 'console'])
+            {
+              'id': '$modeField-$mode',
+              'name': 'Legacy',
+              'baseUrl': 'https://example.test',
+              modeField: mode,
+              'accessTokenId': 'legacy-edge-id',
+              'accessToken': 'legacy-edge-token',
+              // Obsolete fields must be ignored even when their types are invalid.
+              'username': 42,
+              'password': ['obsolete'],
+              'cookie': {'obsolete': true},
+              'testResult': 'Previously connected',
+            },
+        {
+          'id': 'layered',
+          'baseUrl': 'https://example.test',
+          'accessTokenId': 'legacy-edge-id',
+          'accessToken': 'legacy-edge-token',
+          'username': 'obsolete',
+          'password': 'obsolete',
+        },
+      ];
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString(ServerStore.key, jsonEncode(legacy));
+      final store = ServerStore(SharedPreferences.getInstance);
+      final profiles = await store.load();
+      expect(
+        profiles.map((profile) => profile.id),
+        legacy.map((json) => json['id']),
+      );
+      for (final profile in profiles) {
+        expect(profile.apiKey, isNull);
+        expect(profile.hasApiKey, isFalse);
+        expect(() => buildAuthHeaders(profile), throwsA(isA<AppError>()));
+        final edgeEnabled = !profile.id.endsWith('console');
+        expect(profile.hasPangolin, edgeEnabled);
+        expect(profile.accessTokenId, edgeEnabled ? 'legacy-edge-id' : isNull);
+        expect(profile.accessToken, edgeEnabled ? 'legacy-edge-token' : isNull);
+      }
+      await store.save(profiles);
+      final saved = jsonDecode(prefs.getString(ServerStore.key)!) as List;
+      for (final profile in saved.cast<Map<String, dynamic>>()) {
+        expect(
+          profile.keys,
+          isNot(
+            anyElement(
+              isIn(['authMode', 'mode', 'username', 'password', 'cookie']),
+            ),
+          ),
+        );
+      }
+      expect(
+        (await store.load()).map((profile) => profile.id),
+        profiles.map((profile) => profile.id),
+      );
+    },
+  );
+
+  test(
     'queued profile edits, test results, and deletion survive reload',
     () async {
       final container = ProviderContainer();
@@ -36,8 +100,7 @@ void main() {
         id: 'stable-id',
         name: 'Before',
         baseUrl: 'https://example.test',
-        username: 'alice',
-        password: 'password',
+        apiKey: 'test-api-key',
       );
       await controller.add(server);
       final edits = [
@@ -64,6 +127,7 @@ void main() {
       id: 'original',
       name: 'Original',
       baseUrl: 'https://original.test',
+      apiKey: 'original-api-key',
       accessTokenId: 'id',
       accessToken: 'original-token',
     );
@@ -94,6 +158,7 @@ void main() {
       requests++;
       expect(request.url.host, 'original.test');
       expect(request.headers['P-Access-Token'], 'original-token');
+      expect(request.headers['Authorization'], 'Bearer original-api-key');
       final body = jsonDecode(request.body) as Map<String, dynamic>;
       expect(body['previous_response_id'], 'persisted-response');
       expect(body['metadata'], {'harness_id': 'original-harness'});

@@ -25,6 +25,7 @@ void main() {
     id: 's1',
     name: 'Server',
     baseUrl: 'https://example.test',
+    apiKey: 'test-api-key',
     accessTokenId: 'id',
     accessToken: 'token',
   );

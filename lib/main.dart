@@ -37,8 +37,7 @@ class ServerConfig {
     required this.baseUrl,
     this.accessTokenId,
     this.accessToken,
-    this.username,
-    this.password,
+    this.apiKey,
     this.testResult,
   });
 
@@ -47,15 +46,13 @@ class ServerConfig {
   final String baseUrl;
   final String? accessTokenId;
   final String? accessToken;
-  final String? username;
-  final String? password;
+  final String? apiKey;
   final String? testResult;
 
   bool get hasPangolin =>
       (accessTokenId?.trim().isNotEmpty ?? false) &&
       (accessToken?.trim().isNotEmpty ?? false);
-  bool get hasConsoleCredentials =>
-      (username?.trim().isNotEmpty ?? false) && (password?.isNotEmpty ?? false);
+  bool get hasApiKey => apiKey?.trim().isNotEmpty ?? false;
 
   ServerConfig copyWith({String? name, String? baseUrl, String? testResult}) =>
       ServerConfig(
@@ -64,8 +61,7 @@ class ServerConfig {
         baseUrl: baseUrl ?? this.baseUrl,
         accessTokenId: accessTokenId,
         accessToken: accessToken,
-        username: username,
-        password: password,
+        apiKey: apiKey,
         testResult: testResult ?? this.testResult,
       );
 
@@ -75,8 +71,7 @@ class ServerConfig {
     'baseUrl': baseUrl,
     'accessTokenId': accessTokenId,
     'accessToken': accessToken,
-    'username': username,
-    'password': password,
+    'apiKey': apiKey,
     'testResult': testResult,
   };
 
@@ -95,8 +90,7 @@ class ServerConfig {
       accessToken: legacyMode == 'console'
           ? null
           : json['accessToken'] as String?,
-      username: legacyMode == 'pangolin' ? null : json['username'] as String?,
-      password: legacyMode == 'pangolin' ? null : json['password'] as String?,
+      apiKey: json['apiKey'] as String?,
       testResult: json['testResult'] as String?,
     );
   }
@@ -255,9 +249,9 @@ class ResponseDraft {
 }
 
 class UhpService {
-  UhpService(http.Client client) : _auth = LayeredAuth(client);
+  UhpService(this._client);
 
-  final LayeredAuth _auth;
+  final http.Client _client;
   static const Duration timeout = Duration(seconds: 300);
 
   Future<String> testConnection(ServerConfig server) async {
@@ -274,11 +268,10 @@ class UhpService {
     );
     final http.Response response;
     try {
-      response = await _auth
-          .clientFor(server)
-          .send(request)
-          .then(http.Response.fromStream)
-          .timeout(timeout);
+      response = await _ProfileClient(
+        _client,
+        server,
+      ).send(request).then(http.Response.fromStream).timeout(timeout);
     } finally {
       abort.complete();
     }
@@ -298,19 +291,22 @@ class UhpService {
   }
 
   StreamingTurn startTurn(ServerConfig server, ResponseDraft draft) =>
-      StreamingTurn(_auth.clientFor(server), server, draft);
+      StreamingTurn(_ProfileClient(_client, server), server, draft);
 
   Future<void> cancelSession(ServerConfig server, String sessionId) =>
-      sendSessionCancel(_auth.clientFor(server), server, sessionId);
+      sendSessionCancel(_ProfileClient(_client, server), server, sessionId);
 }
 
-Map<String, String> buildAuthHeaders(ServerConfig server, {String? cookie}) {
-  final headers = <String, String>{'Content-Type': 'application/json'};
+Map<String, String> buildAuthHeaders(ServerConfig server) {
+  if (!server.hasApiKey) throw const AppError('API key required');
+  final headers = <String, String>{
+    'Content-Type': 'application/json',
+    'Authorization': 'Bearer ${server.apiKey!.trim()}',
+  };
   if (server.hasPangolin) {
     headers['P-Access-Token-Id'] = server.accessTokenId!.trim();
     headers['P-Access-Token'] = server.accessToken!.trim();
   }
-  if (cookie != null && cookie.isNotEmpty) headers['Cookie'] = cookie;
   return headers;
 }
 
@@ -339,22 +335,22 @@ List<dynamic> extractHarnessList(Map<String, dynamic> payload) {
 }
 
 String extractErrorBody(String body) {
+  var message = body;
   try {
     final decoded = jsonDecode(body);
     if (decoded is Map<String, dynamic>) {
       final error = decoded['error'];
-      if (error is String && error.isNotEmpty) {
-        return error;
-      }
       final detail = decoded['detail'];
-      if (detail is String && detail.isNotEmpty) {
-        return detail;
+      if (error is String && error.isNotEmpty) {
+        message = error;
+      } else if (detail is String && detail.isNotEmpty) {
+        message = detail;
       }
     }
-  } catch (_) {
-    return body.length > 280 ? '${body.substring(0, 280)}…' : body;
+  } on FormatException {
+    // Non-JSON errors are displayed as a bounded body excerpt.
   }
-  return body.length > 280 ? '${body.substring(0, 280)}…' : body;
+  return message.length > 280 ? '${message.substring(0, 280)}…' : message;
 }
 
 String extractAssistantText(Map<String, dynamic> payload) {
@@ -394,15 +390,6 @@ String extractSessionId(Map<String, dynamic> payload) {
     return '${metadata['session_id'] ?? ''}';
   }
   return '';
-}
-
-String extractCookie(Map<String, String> headers) {
-  final raw = headers['set-cookie'] ?? headers['Set-Cookie'];
-  if (raw == null || raw.isEmpty) {
-    return '';
-  }
-  final firstCookie = raw.split(',').first;
-  return firstCookie.split(';').first.trim();
 }
 
 Map<String, dynamic> buildResponseRequestBody(

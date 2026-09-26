@@ -86,10 +86,18 @@ class ServersScreen extends ConsumerWidget {
                           server.name.isEmpty ? 'Unnamed server' : server.name,
                         ),
                         subtitle: Text(
-                          '${server.baseUrl}\n${server.testResult ?? 'Not tested'}',
+                          '${server.baseUrl}\n${server.hasApiKey ? server.testResult ?? 'Not tested' : 'API key required'}',
                         ),
                         isThreeLine: true,
                         onTap: () {
+                          if (!server.hasApiKey) {
+                            Navigator.of(context).push<void>(
+                              MaterialPageRoute(
+                                builder: (_) => ServerEditor(server: server),
+                              ),
+                            );
+                            return;
+                          }
                           ref.read(selectedServerProvider.notifier).state =
                               server;
                           ref.read(selectedHarnessProvider.notifier).state =
@@ -128,30 +136,30 @@ class _ServerEditorState extends ConsumerState<ServerEditor> {
   late final _url = TextEditingController(text: _draft.baseUrl);
   late final _tokenId = TextEditingController(text: _draft.accessTokenId);
   late final _token = TextEditingController(text: _draft.accessToken);
-  late final _username = TextEditingController(text: _draft.username);
-  late final _password = TextEditingController(text: _draft.password);
+  late final _apiKey = TextEditingController(text: _draft.apiKey);
   Future<void> _saved = Future<void>.value();
   bool _testing = false;
   String? _saveError;
 
   @override
   void dispose() {
-    for (final c in [_name, _url, _tokenId, _token, _username, _password]) {
+    for (final c in [_name, _url, _tokenId, _token, _apiKey]) {
       c.dispose();
     }
     super.dispose();
   }
 
   void _changed() {
-    _draft = ServerConfig(
-      id: _draft.id,
-      name: _name.text,
-      baseUrl: normalizeBaseUrl(_url.text),
-      accessTokenId: _tokenId.text,
-      accessToken: _token.text,
-      username: _username.text,
-      password: _password.text,
-    );
+    setState(() {
+      _draft = ServerConfig(
+        id: _draft.id,
+        name: _name.text,
+        baseUrl: normalizeBaseUrl(_url.text),
+        apiKey: _apiKey.text,
+        accessTokenId: _tokenId.text,
+        accessToken: _token.text,
+      );
+    });
     // Queue every mutation, without debounce timers. No manual save step.
     _persist();
   }
@@ -242,17 +250,25 @@ class _ServerEditorState extends ConsumerState<ServerEditor> {
           keyboardType: TextInputType.url,
           decoration: const InputDecoration(labelText: 'Base URL'),
         ),
-        const SizedBox(height: 16),
-        const Text(
-          'Authentication has two optional layers. A UHP console behind '
-          'Pangolin may need BOTH: the edge token pair and console credentials. '
-          'Each layer is enabled only when both of its fields are filled.',
+        TextField(
+          controller: _apiKey,
+          enabled: !_testing,
+          onChanged: (_) => _changed(),
+          obscureText: true,
+          autocorrect: false,
+          enableSuggestions: false,
+          decoration: InputDecoration(
+            labelText: 'API key (required)',
+            helperText: 'Create an API key in server Settings → Keys.',
+            errorText: _draft.hasApiKey ? null : 'API key required',
+          ),
         ),
         const SizedBox(height: 16),
         Text(
           'Pangolin edge authentication (optional)',
           style: Theme.of(context).textTheme.titleMedium,
         ),
+        const Text('Only needed behind Pangolin; fill both token fields.'),
         TextField(
           controller: _tokenId,
           enabled: !_testing,
@@ -265,24 +281,6 @@ class _ServerEditorState extends ConsumerState<ServerEditor> {
           onChanged: (_) => _changed(),
           obscureText: true,
           decoration: const InputDecoration(labelText: 'P-Access-Token'),
-        ),
-        const SizedBox(height: 16),
-        Text(
-          'Console authentication (optional)',
-          style: Theme.of(context).textTheme.titleMedium,
-        ),
-        TextField(
-          controller: _username,
-          enabled: !_testing,
-          onChanged: (_) => _changed(),
-          decoration: const InputDecoration(labelText: 'Username'),
-        ),
-        TextField(
-          controller: _password,
-          enabled: !_testing,
-          onChanged: (_) => _changed(),
-          obscureText: true,
-          decoration: const InputDecoration(labelText: 'Password'),
         ),
         const SizedBox(height: 16),
         OutlinedButton(
