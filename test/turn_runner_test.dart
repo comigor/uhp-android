@@ -25,7 +25,6 @@ void main() {
     id: 's1',
     name: 'Server',
     baseUrl: 'https://example.test',
-    authMode: AuthMode.pangolin,
     accessTokenId: 'id',
     accessToken: 'token',
   );

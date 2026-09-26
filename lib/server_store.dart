@@ -93,35 +93,10 @@ class ServersController extends AsyncNotifier<List<ServerConfig>> {
   Future<void> delete(String id) =>
       _mutate((current) => current.where((s) => s.id != id).toList());
 
-  Future<void> updateCookie(ServerConfig source, String cookie) => _mutate((
-    current,
-  ) {
-    // A turn may finish after the profile was edited or deleted. Never restore
-    // the old credentials over a newer profile, or resurrect a deleted one.
+  Future<void> setTestResult(String id, String result) => _mutate((current) {
     return [
       for (final server in current)
-        if (server.id == source.id &&
-            server.baseUrl == source.baseUrl &&
-            server.authMode == source.authMode &&
-            server.accessTokenId == source.accessTokenId &&
-            server.accessToken == source.accessToken &&
-            server.username == source.username &&
-            server.password == source.password &&
-            server.cookie == source.cookie)
-          server.copyWith(cookie: cookie)
-        else
-          server,
+        if (server.id == id) server.copyWith(testResult: result) else server,
     ];
   });
-
-  Future<void> setTestResult(String id, String result, {String? cookie}) =>
-      _mutate((current) {
-        return [
-          for (final server in current)
-            if (server.id == id)
-              server.copyWith(testResult: result, cookie: cookie)
-            else
-              server,
-        ];
-      });
 }

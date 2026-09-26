@@ -66,7 +66,6 @@ void main() {
       id: 'server',
       name: 'Server',
       baseUrl: 'https://example.test',
-      authMode: AuthMode.pangolin,
       accessTokenId: 'id',
       accessToken: 'token',
     );
@@ -84,6 +83,17 @@ void main() {
     );
     await tester.pumpAndSettle();
     await tester.tap(find.byTooltip('Edit server'));
+    await tester.pumpAndSettle();
+    await tester.scrollUntilVisible(
+      find.text('Test connection'),
+      200,
+      scrollable: find
+          .descendant(
+            of: find.byType(ListView).last,
+            matching: find.byType(Scrollable),
+          )
+          .first,
+    );
     await tester.pumpAndSettle();
     await tester.tap(find.text('Test connection'));
     await tester.pump();

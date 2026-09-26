@@ -24,7 +24,6 @@ class ServersScreen extends ConsumerWidget {
                       id: newLocalId(),
                       name: 'New server',
                       baseUrl: '',
-                      authMode: AuthMode.pangolin,
                     );
                     try {
                       await ref.read(serversProvider.notifier).add(server);
@@ -48,7 +47,6 @@ class ServersScreen extends ConsumerWidget {
                     id: newLocalId(),
                     name: demoServer.name,
                     baseUrl: demoServer.baseUrl,
-                    authMode: demoServer.authMode,
                   );
                   try {
                     await ref.read(serversProvider.notifier).add(server);
@@ -144,12 +142,11 @@ class _ServerEditorState extends ConsumerState<ServerEditor> {
     super.dispose();
   }
 
-  void _changed({AuthMode? mode}) {
+  void _changed() {
     _draft = ServerConfig(
       id: _draft.id,
       name: _name.text,
       baseUrl: normalizeBaseUrl(_url.text),
-      authMode: mode ?? _draft.authMode,
       accessTokenId: _tokenId.text,
       accessToken: _token.text,
       username: _username.text,
@@ -183,19 +180,12 @@ class _ServerEditorState extends ConsumerState<ServerEditor> {
     setState(() => _testing = true);
     try {
       await _saved;
-      final authenticated = await service.login(_draft);
-      if (authenticated.cookie != _draft.cookie) {
-        await profiles.updateCookie(_draft, authenticated.cookie!);
-      }
-      final result = await service.testConnection(authenticated);
-      await profiles.setTestResult(
-        _draft.id,
-        result,
-        cookie: authenticated.cookie,
-      );
-      _draft = authenticated.copyWith(testResult: result);
+      final result = await service.testConnection(_draft);
+      await profiles.setTestResult(_draft.id, result);
+      _draft = _draft.copyWith(testResult: result);
       if (mounted) showMessage(ref, result);
     } catch (error) {
+      _draft = _draft.copyWith(testResult: '$error');
       try {
         await profiles.setTestResult(_draft.id, '$error');
       } catch (storageError) {
@@ -252,58 +242,48 @@ class _ServerEditorState extends ConsumerState<ServerEditor> {
           keyboardType: TextInputType.url,
           decoration: const InputDecoration(labelText: 'Base URL'),
         ),
-        DropdownButtonFormField<AuthMode>(
-          isExpanded: true,
-          initialValue: _draft.authMode,
-          decoration: const InputDecoration(labelText: 'Auth mode'),
-          items: const [
-            DropdownMenuItem(
-              value: AuthMode.pangolin,
-              child: Text(
-                'Pangolin machine token',
-                overflow: TextOverflow.ellipsis,
-              ),
-            ),
-            DropdownMenuItem(
-              value: AuthMode.console,
-              child: Text('Console login cookie'),
-            ),
-          ],
-          onChanged: _testing
-              ? null
-              : (mode) {
-                  setState(() => _changed(mode: mode));
-                },
+        const SizedBox(height: 16),
+        const Text(
+          'Authentication has two optional layers. A UHP console behind '
+          'Pangolin may need BOTH: the edge token pair and console credentials. '
+          'Each layer is enabled only when both of its fields are filled.',
         ),
-        if (_draft.authMode == AuthMode.pangolin) ...[
-          TextField(
-            controller: _tokenId,
-            enabled: !_testing,
-            onChanged: (_) => _changed(),
-            decoration: const InputDecoration(labelText: 'P-Access-Token-Id'),
-          ),
-          TextField(
-            controller: _token,
-            enabled: !_testing,
-            onChanged: (_) => _changed(),
-            obscureText: true,
-            decoration: const InputDecoration(labelText: 'P-Access-Token'),
-          ),
-        ] else ...[
-          TextField(
-            controller: _username,
-            enabled: !_testing,
-            onChanged: (_) => _changed(),
-            decoration: const InputDecoration(labelText: 'Username'),
-          ),
-          TextField(
-            controller: _password,
-            enabled: !_testing,
-            onChanged: (_) => _changed(),
-            obscureText: true,
-            decoration: const InputDecoration(labelText: 'Password'),
-          ),
-        ],
+        const SizedBox(height: 16),
+        Text(
+          'Pangolin edge authentication (optional)',
+          style: Theme.of(context).textTheme.titleMedium,
+        ),
+        TextField(
+          controller: _tokenId,
+          enabled: !_testing,
+          onChanged: (_) => _changed(),
+          decoration: const InputDecoration(labelText: 'P-Access-Token-Id'),
+        ),
+        TextField(
+          controller: _token,
+          enabled: !_testing,
+          onChanged: (_) => _changed(),
+          obscureText: true,
+          decoration: const InputDecoration(labelText: 'P-Access-Token'),
+        ),
+        const SizedBox(height: 16),
+        Text(
+          'Console authentication (optional)',
+          style: Theme.of(context).textTheme.titleMedium,
+        ),
+        TextField(
+          controller: _username,
+          enabled: !_testing,
+          onChanged: (_) => _changed(),
+          decoration: const InputDecoration(labelText: 'Username'),
+        ),
+        TextField(
+          controller: _password,
+          enabled: !_testing,
+          onChanged: (_) => _changed(),
+          obscureText: true,
+          decoration: const InputDecoration(labelText: 'Password'),
+        ),
         const SizedBox(height: 16),
         OutlinedButton(
           onPressed: _testing ? null : _test,

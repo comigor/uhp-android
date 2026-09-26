@@ -11,7 +11,6 @@ void main() {
         id: 'pangolin-server',
         name: 'Pangolin server',
         baseUrl: 'https://pangolin.example.test',
-        authMode: AuthMode.pangolin,
         accessTokenId: 'machine-id',
         accessToken: 'machine-secret',
       ),
@@ -19,10 +18,8 @@ void main() {
         id: 'console-server',
         name: 'Console server',
         baseUrl: 'https://console.example.test',
-        authMode: AuthMode.console,
         username: 'alice',
         password: 'login-secret',
-        cookie: 'session=saved-cookie',
       ),
     ];
 
@@ -34,7 +31,10 @@ void main() {
       expect(restored.id, profile.id);
       expect(restored.name, profile.name);
       expect(restored.baseUrl, profile.baseUrl);
-      expect(restored.authMode, profile.authMode);
+      expect(restored.accessTokenId, profile.accessTokenId);
+      expect(restored.accessToken, profile.accessToken);
+      expect(restored.toJson().containsKey('cookie'), isFalse);
+      expect(restored.toJson().containsKey('authMode'), isFalse);
       expect(restored.username, profile.username);
       expect(restored.password, profile.password);
       expect(buildAuthHeaders(restored), buildAuthHeaders(profile));
@@ -48,10 +48,8 @@ void main() {
       id: 'server-1',
       name: 'Saved server',
       baseUrl: 'https://example.test',
-      authMode: AuthMode.console,
       username: 'alice',
       password: 'saved-password',
-      cookie: 'session=thread-cookie',
     );
     const harness = Harness(
       id: 'harness-1',

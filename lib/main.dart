@@ -13,13 +13,12 @@ part 'thread_store.dart';
 part 'screens.dart';
 part 'streaming.dart';
 part 'turn_runner.dart';
+part 'auth_client.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
   runApp(const ProviderScope(child: UhpApp()));
 }
-
-enum AuthMode { pangolin, console }
 
 enum AppTab { servers, harnesses, tasks, history }
 
@@ -28,7 +27,6 @@ enum TurnStatus { running, completed, cancelled, interrupted, failed }
 const demoServer = ServerConfig(
   name: 'HarnessRouter demo',
   baseUrl: 'https://your-uhp-server.example',
-  authMode: AuthMode.pangolin,
 );
 
 @immutable
@@ -37,70 +35,68 @@ class ServerConfig {
     this.id = '',
     required this.name,
     required this.baseUrl,
-    required this.authMode,
     this.accessTokenId,
     this.accessToken,
     this.username,
     this.password,
-    this.cookie,
     this.testResult,
   });
 
   final String id;
   final String name;
   final String baseUrl;
-  final AuthMode authMode;
   final String? accessTokenId;
   final String? accessToken;
   final String? username;
   final String? password;
-  final String? cookie;
   final String? testResult;
 
-  ServerConfig copyWith({
-    String? name,
-    String? baseUrl,
-    String? cookie,
-    String? testResult,
-  }) => ServerConfig(
-    id: id,
-    name: name ?? this.name,
-    baseUrl: baseUrl ?? this.baseUrl,
-    authMode: authMode,
-    accessTokenId: accessTokenId,
-    accessToken: accessToken,
-    username: username,
-    password: password,
-    cookie: cookie ?? this.cookie,
-    testResult: testResult ?? this.testResult,
-  );
+  bool get hasPangolin =>
+      (accessTokenId?.trim().isNotEmpty ?? false) &&
+      (accessToken?.trim().isNotEmpty ?? false);
+  bool get hasConsoleCredentials =>
+      (username?.trim().isNotEmpty ?? false) && (password?.isNotEmpty ?? false);
+
+  ServerConfig copyWith({String? name, String? baseUrl, String? testResult}) =>
+      ServerConfig(
+        id: id,
+        name: name ?? this.name,
+        baseUrl: baseUrl ?? this.baseUrl,
+        accessTokenId: accessTokenId,
+        accessToken: accessToken,
+        username: username,
+        password: password,
+        testResult: testResult ?? this.testResult,
+      );
 
   Map<String, dynamic> toJson() => <String, dynamic>{
     'id': id,
     'name': name,
     'baseUrl': baseUrl,
-    'authMode': authMode.name,
     'accessTokenId': accessTokenId,
     'accessToken': accessToken,
     'username': username,
     'password': password,
-    'cookie': cookie,
     'testResult': testResult,
   };
 
   factory ServerConfig.fromJson(Map<String, dynamic> json) {
     final id = json['id'] as String;
     if (id.isEmpty) throw const FormatException('Missing server ID');
+    // Legacy modes hid the other credentials; do not silently enable those.
+    final legacyMode = json['authMode'] ?? json['mode'];
     return ServerConfig(
       id: id,
-      name: json['name'] as String,
-      baseUrl: json['baseUrl'] as String,
-      authMode: AuthMode.values.byName(json['authMode'] as String),
-      accessTokenId: json['accessTokenId'] as String?,
-      accessToken: json['accessToken'] as String?,
-      username: json['username'] as String?,
-      password: json['password'] as String?,
-      cookie: json['cookie'] as String?,
+      name: json['name'] as String? ?? '',
+      baseUrl: json['baseUrl'] as String? ?? '',
+      accessTokenId: legacyMode == 'console'
+          ? null
+          : json['accessTokenId'] as String?,
+      accessToken: legacyMode == 'console'
+          ? null
+          : json['accessToken'] as String?,
+      username: legacyMode == 'pangolin' ? null : json['username'] as String?,
+      password: legacyMode == 'pangolin' ? null : json['password'] as String?,
       testResult: json['testResult'] as String?,
     );
   }
@@ -214,18 +210,7 @@ class HarnessesController extends StateNotifier<AsyncValue<List<Harness>>> {
     state = const AsyncLoading();
     try {
       final service = _ref.read(uhpServiceProvider);
-      final authenticated =
-          server.authMode == AuthMode.console &&
-              (server.cookie?.isEmpty ?? true)
-          ? await service.login(server)
-          : server;
-      if (!mounted) return;
-      if (authenticated.cookie != server.cookie) {
-        await _ref
-            .read(serversProvider.notifier)
-            .updateCookie(server, authenticated.cookie!);
-      }
-      final harnesses = await service.fetchHarnesses(authenticated);
+      final harnesses = await service.fetchHarnesses(server);
       if (mounted) state = AsyncData(harnesses);
     } catch (error, stackTrace) {
       if (mounted) state = AsyncError(error, stackTrace);
@@ -270,56 +255,33 @@ class ResponseDraft {
 }
 
 class UhpService {
-  const UhpService(this._client);
+  UhpService(http.Client client) : _auth = LayeredAuth(client);
 
-  final http.Client _client;
+  final LayeredAuth _auth;
   static const Duration timeout = Duration(seconds: 300);
 
-  Future<ServerConfig> login(ServerConfig server) async {
-    if (server.authMode != AuthMode.console) {
-      return server;
-    }
-    final username = server.username?.trim() ?? '';
-    final password = server.password ?? '';
-    if (username.isEmpty || password.isEmpty) {
-      throw const AppError('Console login requires username and password.');
-    }
-
-    final response = await _client
-        .post(
-          buildApiUri(server.baseUrl, '/api/selfhost/login'),
-          headers: const <String, String>{'Content-Type': 'application/json'},
-          body: jsonEncode(<String, dynamic>{
-            'username': username,
-            'password': password,
-          }),
-        )
-        .timeout(timeout);
-
-    if (response.statusCode < 200 || response.statusCode >= 300) {
-      throw ApiException(response.statusCode, extractErrorBody(response.body));
-    }
-
-    final cookie = extractCookie(response.headers);
-    if (cookie.isEmpty) {
-      throw const AppError('Console login succeeded without Set-Cookie.');
-    }
-    return server.copyWith(cookie: cookie);
-  }
-
   Future<String> testConnection(ServerConfig server) async {
-    final authedServer = await _ensureAuthenticated(server);
-    final harnesses = await fetchHarnesses(authedServer);
+    final harnesses = await fetchHarnesses(server);
     return '${harnesses.length} harnesses';
   }
 
   Future<List<Harness>> fetchHarnesses(ServerConfig server) async {
-    final response = await _client
-        .get(
-          buildApiUri(server.baseUrl, '/api/harness/v1/harnesses'),
-          headers: buildAuthHeaders(server),
-        )
-        .timeout(timeout);
+    final abort = Completer<void>();
+    final request = http.AbortableRequest(
+      'GET',
+      buildApiUri(server.baseUrl, '/api/harness/v1/harnesses'),
+      abortTrigger: abort.future,
+    );
+    final http.Response response;
+    try {
+      response = await _auth
+          .clientFor(server)
+          .send(request)
+          .then(http.Response.fromStream)
+          .timeout(timeout);
+    } finally {
+      abort.complete();
+    }
 
     if (response.statusCode < 200 || response.statusCode >= 300) {
       throw ApiException(response.statusCode, extractErrorBody(response.body));
@@ -336,40 +298,19 @@ class UhpService {
   }
 
   StreamingTurn startTurn(ServerConfig server, ResponseDraft draft) =>
-      StreamingTurn(_client, server, draft);
+      StreamingTurn(_auth.clientFor(server), server, draft);
 
   Future<void> cancelSession(ServerConfig server, String sessionId) =>
-      sendSessionCancel(_client, server, sessionId);
-
-  Future<ServerConfig> _ensureAuthenticated(ServerConfig server) async {
-    if (server.authMode == AuthMode.console &&
-        (server.cookie == null || server.cookie!.isEmpty)) {
-      return login(server);
-    }
-    return server;
-  }
+      sendSessionCancel(_auth.clientFor(server), server, sessionId);
 }
 
-Map<String, String> buildAuthHeaders(ServerConfig server) {
+Map<String, String> buildAuthHeaders(ServerConfig server, {String? cookie}) {
   final headers = <String, String>{'Content-Type': 'application/json'};
-  switch (server.authMode) {
-    case AuthMode.pangolin:
-      final tokenId = server.accessTokenId?.trim() ?? '';
-      final token = server.accessToken?.trim() ?? '';
-      if (tokenId.isNotEmpty) {
-        headers['P-Access-Token-Id'] = tokenId;
-      }
-      if (token.isNotEmpty) {
-        headers['P-Access-Token'] = token;
-      }
-      break;
-    case AuthMode.console:
-      final cookie = server.cookie?.trim() ?? '';
-      if (cookie.isNotEmpty) {
-        headers['Cookie'] = cookie;
-      }
-      break;
+  if (server.hasPangolin) {
+    headers['P-Access-Token-Id'] = server.accessTokenId!.trim();
+    headers['P-Access-Token'] = server.accessToken!.trim();
   }
+  if (cookie != null && cookie.isNotEmpty) headers['Cookie'] = cookie;
   return headers;
 }
 

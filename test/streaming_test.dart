@@ -9,7 +9,6 @@ import 'package:uhp_android/main.dart';
 const server = ServerConfig(
   name: 'demo',
   baseUrl: 'https://example.test',
-  authMode: AuthMode.pangolin,
   accessTokenId: 'token-id',
   accessToken: 'secret',
 );

@@ -39,7 +39,6 @@ void main() {
       const ServerConfig(
         name: 'demo',
         baseUrl: 'https://example.test',
-        authMode: AuthMode.pangolin,
         accessTokenId: 'token-id',
         accessToken: 'token-value',
       ),
@@ -49,12 +48,8 @@ void main() {
     expect(pangolinHeaders.containsKey('Cookie'), isFalse);
 
     final consoleHeaders = buildAuthHeaders(
-      const ServerConfig(
-        name: 'demo',
-        baseUrl: 'https://example.test',
-        authMode: AuthMode.console,
-        cookie: 'session=abc123',
-      ),
+      const ServerConfig(name: 'demo', baseUrl: 'https://example.test'),
+      cookie: 'session=abc123',
     );
     expect(consoleHeaders['Cookie'], 'session=abc123');
   });
@@ -76,38 +71,45 @@ void main() {
     });
   });
 
-  test('captures cookie from console login', () async {
-    final service = UhpService(
-      MockClient((request) async {
-        expect(
-          request.url.toString(),
-          'https://example.test/api/selfhost/login',
-        );
-        expect(request.method, 'POST');
-        expect(jsonDecode(request.body), <String, dynamic>{
-          'username': 'igor',
-          'password': 'secret',
-        });
-        return http.Response(
-          '{}',
-          200,
-          headers: <String, String>{
-            'set-cookie': 'session=abc123; Path=/; HttpOnly',
-          },
-        );
-      }),
-    );
+  test(
+    'captures console login cookie for authenticated API requests',
+    () async {
+      var logins = 0;
+      final service = UhpService(
+        MockClient((request) async {
+          if (request.url.path == '/api/selfhost/login') {
+            logins++;
+            expect(request.method, 'POST');
+            expect(jsonDecode(request.body), <String, dynamic>{
+              'username': 'igor',
+              'password': 'secret',
+            });
+            return http.Response(
+              '{}',
+              200,
+              headers: <String, String>{
+                'set-cookie': 'session=abc123; Path=/; HttpOnly',
+              },
+            );
+          }
+          expect(request.url.path, '/api/harness/v1/harnesses');
+          expect(logins, 1);
+          expect(request.headers['Cookie'], 'session=abc123');
+          return http.Response('{"data":[{"id":"private-harness"}]}', 200);
+        }),
+      );
 
-    final updated = await service.login(
-      const ServerConfig(
-        name: 'demo',
-        baseUrl: 'https://example.test/',
-        authMode: AuthMode.console,
-        username: 'igor',
-        password: 'secret',
-      ),
-    );
+      final harnesses = await service.fetchHarnesses(
+        const ServerConfig(
+          name: 'demo',
+          baseUrl: 'https://example.test/',
+          username: 'igor',
+          password: 'secret',
+        ),
+      );
 
-    expect(updated.cookie, 'session=abc123');
-  });
+      expect(harnesses.single.id, 'private-harness');
+      expect(logins, 1);
+    },
+  );
 }

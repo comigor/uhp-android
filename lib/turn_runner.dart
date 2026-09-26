@@ -65,7 +65,6 @@ class TaskRunner {
     ServerConfig server,
     Harness harness,
   ) async {
-    ServerConfig authenticated = server;
     ResponseRecord? record;
     Object? failure;
     try {
@@ -77,21 +76,6 @@ class TaskRunner {
       }
       if (_disposed) return;
       final service = ref.read(uhpServiceProvider);
-      if (_stopRequested == null) {
-        authenticated =
-            server.authMode == AuthMode.console &&
-                (server.cookie?.isEmpty ?? true)
-            ? await service.login(server)
-            : server;
-        if (_disposed) return;
-        _server = authenticated;
-        if (authenticated.cookie != server.cookie) {
-          await ref
-              .read(serversProvider.notifier)
-              .updateCookie(server, authenticated.cookie!);
-        }
-      }
-      if (_disposed) return;
       if (_stopRequested != null) {
         record = ResponseRecord(
           prompt: input,
@@ -102,7 +86,7 @@ class TaskRunner {
         );
       } else {
         _turn = service.startTurn(
-          authenticated,
+          server,
           ResponseDraft(
             input: input,
             harnessId: harness.id,
@@ -136,7 +120,7 @@ class TaskRunner {
       if (_disposed) return;
       final updated = thread == null
           ? ConversationThread.start(
-              server: authenticated,
+              server: server,
               harness: harness,
               prompt: input,
               record: record,
@@ -144,7 +128,7 @@ class TaskRunner {
           : ConversationThread(
               id: thread.id,
               title: thread.title,
-              server: authenticated,
+              server: server,
               harnessId: thread.harnessId,
               harnessName: thread.harnessName,
               model: thread.model,

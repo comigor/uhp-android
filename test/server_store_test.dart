@@ -36,18 +36,13 @@ void main() {
         id: 'stable-id',
         name: 'Before',
         baseUrl: 'https://example.test',
-        authMode: AuthMode.console,
         username: 'alice',
         password: 'password',
       );
       await controller.add(server);
       final edits = [
         controller.updateProfile(server.copyWith(name: 'After')),
-        controller.setTestResult(
-          server.id,
-          '2 harnesses',
-          cookie: 'session=saved',
-        ),
+        controller.setTestResult(server.id, '2 harnesses'),
       ];
       await Future.wait(edits);
       final store = ServerStore(SharedPreferences.getInstance);
@@ -55,7 +50,8 @@ void main() {
       expect(loaded.id, 'stable-id');
       expect(loaded.name, 'After');
       expect(loaded.testResult, '2 harnesses');
-      expect(buildAuthHeaders(loaded)['Cookie'], 'session=saved');
+      expect(buildAuthHeaders(loaded).containsKey('Cookie'), isFalse);
+      expect(loaded.toJson().containsKey('cookie'), isFalse);
       await controller.delete(server.id);
       expect(await store.load(), isEmpty);
     },
@@ -68,7 +64,6 @@ void main() {
       id: 'original',
       name: 'Original',
       baseUrl: 'https://original.test',
-      authMode: AuthMode.pangolin,
       accessTokenId: 'id',
       accessToken: 'original-token',
     );
@@ -134,7 +129,6 @@ void main() {
       id: 'other',
       name: 'Other',
       baseUrl: 'https://other.test',
-      authMode: AuthMode.console,
     );
     container.read(selectedHarnessProvider.notifier).state = const Harness(
       id: 'other-harness',
