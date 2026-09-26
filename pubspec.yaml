@@ -11,6 +11,8 @@ dependencies:
     sdk: flutter
   flutter_riverpod: ^2.6.1
   http: ^1.5.0
+  shared_preferences: ^2.5.3
+  path_provider: ^2.1.5
 
   cupertino_icons: ^1.0.8
 
