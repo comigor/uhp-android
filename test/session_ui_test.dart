@@ -61,12 +61,15 @@ void main() {
     final directory = await tester.runAsync(
       () => Directory.systemTemp.createTemp('session-ui-'),
     );
+    // ThreadStore creates its serialization future in the constructor. Keep
+    // that queue in the same real async zone as the disk operations below.
+    final store = await tester.runAsync(
+      () async => ThreadStore(() async => directory!),
+    );
     final container = ProviderContainer(
       overrides: [
         httpClientProvider.overrideWithValue(client),
-        threadStoreProvider.overrideWithValue(
-          ThreadStore(() async => directory!),
-        ),
+        threadStoreProvider.overrideWithValue(store!),
       ],
     );
     await tester.runAsync(() => container.read(serversProvider.future));
@@ -95,25 +98,30 @@ void main() {
     ProviderContainer container,
     Future<void> Function() action,
   ) async {
-    final changed = Completer<void>();
-    final subscription = container.listen(threadProvider, (_, next) {
-      if (next != null && !changed.isCompleted) changed.complete();
-    });
-    try {
-      await action();
-      for (var frame = 0; frame < 100; frame++) {
-        await tester.runAsync(
-          () => Future<void>.delayed(const Duration(milliseconds: 10)),
-        );
-        await tester.pump();
-        if (changed.isCompleted && !container.read(taskBusyProvider)) break;
+    // Start the action and await its I/O in the real async zone. Pumping fake
+    // frames cannot make filesystem work finish, regardless of runner speed.
+    await tester.runAsync(() async {
+      final changed = Completer<void>();
+      final idle = Completer<void>();
+      final threadSubscription = container.listen(threadProvider, (_, next) {
+        if (next != null && !changed.isCompleted) changed.complete();
+      });
+      final busySubscription = container.listen(taskBusyProvider, (_, busy) {
+        if (!busy && !idle.isCompleted) idle.complete();
+      });
+      try {
+        await action();
+        await changed.future;
+        // Submissions publish the thread before its save finishes. Session
+        // imports instead publish after saving, without setting taskBusy.
+        if (container.read(taskBusyProvider)) await idle.future;
+      } finally {
+        threadSubscription.close();
+        busySubscription.close();
       }
-      expect(changed.isCompleted, isTrue);
-      expect(container.read(taskBusyProvider), isFalse);
-      await tester.pumpAndSettle();
-    } finally {
-      subscription.close();
-    }
+    });
+    expect(container.read(taskBusyProvider), isFalse);
+    await tester.pumpAndSettle();
   }
 
   testWidgets(
