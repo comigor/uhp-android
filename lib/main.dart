@@ -8,6 +8,7 @@ import 'package:http/http.dart' as http;
 import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'message_content.dart';
 import 'update_ui.dart';
 import 'updater.dart';
 
@@ -23,6 +24,7 @@ part 'session_screens.dart';
 part 'app_preferences.dart';
 part 'settings_screen.dart';
 part 'app_navigation.dart';
+part 'thread_management.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();

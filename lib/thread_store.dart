@@ -57,6 +57,8 @@ class ConversationThread {
   ConversationThread({
     required this.id,
     required this.title,
+    this.archived = false,
+    this.localTitleOverride,
     required this.server,
     required this.harnessId,
     required this.harnessName,
@@ -72,6 +74,8 @@ class ConversationThread {
 
   final String id;
   final String title;
+  final bool archived;
+  final String? localTitleOverride;
   final ServerConfig server;
   final String harnessId;
   final String harnessName;
@@ -107,7 +111,9 @@ class ConversationThread {
     List<ThreadMessage>? messages,
   }) => ConversationThread(
     id: id,
-    title: session.title,
+    title: localTitleOverride ?? session.title,
+    archived: archived,
+    localTitleOverride: localTitleOverride,
     server: server ?? this.server,
     harnessId: session.harnessId,
     harnessName: harnessName ?? this.harnessName,
@@ -163,6 +169,8 @@ class ConversationThread {
     return ConversationThread(
       id: id,
       title: title,
+      archived: archived,
+      localTitleOverride: localTitleOverride,
       server: server,
       harnessId: harnessId,
       harnessName: harnessName,
@@ -200,12 +208,35 @@ class ConversationThread {
     );
   }
 
+  ConversationThread _withManagement({
+    String? localTitleOverride,
+    bool? archived,
+  }) => ConversationThread(
+    id: id,
+    title: localTitleOverride ?? title,
+    archived: archived ?? this.archived,
+    localTitleOverride: localTitleOverride ?? this.localTitleOverride,
+    server: server,
+    harnessId: harnessId,
+    harnessName: harnessName,
+    model: model,
+    serverSessionId: serverSessionId,
+    serverHarnessId: serverHarnessId,
+    serverLastResponseId: serverLastResponseId,
+    serverSessionStatus: serverSessionStatus,
+    createdAt: createdAt,
+    updatedAt: updatedAt,
+    messages: messages,
+  );
+
   factory ConversationThread.fromJson(Map<String, dynamic> json) {
     final id = json['id'] as String;
     _validateThreadId(id);
     return ConversationThread(
       id: id,
       title: json['title'] as String,
+      archived: json['archived'] == true,
+      localTitleOverride: json['localTitleOverride'] as String?,
       server: ServerConfig.fromJson(json['server'] as Map<String, dynamic>),
       harnessId: json['harnessId'] as String,
       harnessName: json['harnessName'] as String,
@@ -225,6 +256,8 @@ class ConversationThread {
   Map<String, dynamic> toJson() => {
     'id': id,
     'title': title,
+    'archived': archived,
+    'localTitleOverride': localTitleOverride,
     'server': server.toJson(),
     'harnessId': harnessId,
     'harnessName': harnessName,
@@ -244,6 +277,7 @@ class ThreadSummary {
   const ThreadSummary({
     required this.id,
     required this.title,
+    this.archived = false,
     required this.serverId,
     required this.harnessId,
     required this.harnessName,
@@ -254,6 +288,7 @@ class ThreadSummary {
 
   final String id;
   final String title;
+  final bool archived;
   final String serverId;
   final String harnessId;
   final String harnessName;
@@ -264,6 +299,7 @@ class ThreadSummary {
   factory ThreadSummary.fromThread(ConversationThread thread) => ThreadSummary(
     id: thread.id,
     title: thread.title,
+    archived: thread.archived,
     serverId: thread.server.id,
     harnessId: thread.harnessId,
     harnessName: thread.harnessName,
@@ -278,6 +314,7 @@ class ThreadSummary {
     return ThreadSummary(
       id: id,
       title: json['title'] as String,
+      archived: json['archived'] == true,
       serverId: json['serverId'] as String,
       harnessId: json['harnessId'] as String,
       harnessName: json['harnessName'] as String,
@@ -290,6 +327,7 @@ class ThreadSummary {
   Map<String, dynamic> toJson() => {
     'id': id,
     'title': title,
+    'archived': archived,
     'serverId': serverId,
     'harnessId': harnessId,
     'harnessName': harnessName,
@@ -424,6 +462,8 @@ class ThreadStore {
       final settled = ConversationThread(
         id: thread.id,
         title: thread.title,
+        archived: thread.archived,
+        localTitleOverride: thread.localTitleOverride,
         server: thread.server,
         harnessId: thread.harnessId,
         harnessName: thread.harnessName,
@@ -549,13 +589,55 @@ class ThreadStore {
     return linked;
   });
 
+  Future<ConversationThread?> rename(String id, String title) {
+    _validateThreadId(id);
+    final trimmed = title.trim();
+    if (trimmed.isEmpty) {
+      throw ArgumentError.value(title, 'title', 'Must not be empty');
+    }
+    return _updateManagement(id, localTitleOverride: trimmed);
+  }
+
+  Future<ConversationThread?> setArchived(String id, bool archived) {
+    _validateThreadId(id);
+    return _updateManagement(id, archived: archived);
+  }
+
+  Future<ConversationThread?> _updateManagement(
+    String id, {
+    String? localTitleOverride,
+    bool? archived,
+  }) => _serialize(() async {
+    final directory = await _directory();
+    await _recover(directory);
+    final thread = await _readThread(directory, id, strict: true);
+    if (thread == null) return null;
+    final updated = thread._withManagement(
+      localTitleOverride: localTitleOverride,
+      archived: archived,
+    );
+    await _save(directory, updated);
+    return updated;
+  });
+
   Future<void> save(ConversationThread thread) {
     _validateThreadId(thread.id);
     return _serialize(() async {
       final directory = await _directory();
       await directory.create(recursive: true);
       await _recover(directory);
-      await _save(directory, thread);
+      // A turn can finish with a snapshot captured before a local management
+      // change. Only the dedicated mutations replace persisted metadata.
+      final current = await _readThread(directory, thread.id, strict: true);
+      await _save(
+        directory,
+        current == null
+            ? thread
+            : thread._withManagement(
+                localTitleOverride: current.localTitleOverride,
+                archived: current.archived,
+              ),
+      );
     });
   }
 

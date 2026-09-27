@@ -295,7 +295,10 @@ void main() {
         container.read(threadProvider.notifier).state = null;
         await tester.tap(find.widgetWithText(ListTile, 'New chat'));
         await tester.pumpAndSettle();
-        expect(find.text('Default model answer'), findsOneWidget);
+        expect(
+          find.text('Default model answer', findRichText: true),
+          findsOneWidget,
+        );
       },
     );
   }

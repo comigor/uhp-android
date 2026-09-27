@@ -3,6 +3,9 @@ part of 'main.dart';
 bool _conversationBlocked(WidgetRef ref) =>
     ref.read(taskBusyProvider) || ref.read(unsavedThreadProvider) != null;
 
+const _sessionManagementBlockedReason =
+    'Finish or save the current turn before hiding or restoring sessions.';
+
 Future<void> _openServerSession(
   WidgetRef ref,
   ServerConfig server,
@@ -195,6 +198,64 @@ class _ServerSessionsState extends ConsumerState<_ServerSessions> {
     }
   }
 
+  Future<void> _sessionActions(ServerSession session) async {
+    final server = widget.server;
+    if (server == null || !_current || _opening) return;
+    final hide = await showModalBottomSheet<bool>(
+      context: context,
+      builder: (context) => Consumer(
+        builder: (context, ref, _) {
+          final blocked =
+              ref.watch(taskBusyProvider) ||
+              ref.watch(unsavedThreadProvider) != null;
+          return SafeArea(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Padding(
+                  padding: const EdgeInsets.all(16),
+                  child: Text(
+                    session.title.isEmpty ? session.id : session.title,
+                    style: Theme.of(context).textTheme.titleMedium,
+                  ),
+                ),
+                ListTile(
+                  leading: const Icon(Icons.visibility_off_outlined),
+                  title: const Text('Hide from feed'),
+                  subtitle: const Text(
+                    'Only on this device. Restore in Settings > Servers.',
+                  ),
+                  enabled: !blocked,
+                  onTap: blocked ? null : () => Navigator.pop(context, true),
+                ),
+                if (blocked)
+                  const Padding(
+                    padding: EdgeInsets.all(16),
+                    child: Text(_sessionManagementBlockedReason),
+                  ),
+              ],
+            ),
+          );
+        },
+      ),
+    );
+    if (hide != true || !_current || _opening || _conversationBlocked(ref)) {
+      return;
+    }
+    try {
+      await ref
+          .read(appPreferencesProvider.notifier)
+          .hideSession(
+            server.id,
+            session.id,
+            session.title.isEmpty ? session.id : session.title,
+          );
+    } catch (error) {
+      if (mounted) showMessage(ref, error);
+    }
+  }
+
   Future<void> _newChat() async {
     if (_opening || _conversationBlocked(ref)) return;
     setState(() {
@@ -225,6 +286,15 @@ class _ServerSessionsState extends ConsumerState<_ServerSessions> {
         ref.watch(taskBusyProvider) || ref.watch(unsavedThreadProvider) != null;
     final blocked = conversationBlocked || _opening;
     final error = _error ?? harnesses.error;
+    final hiddenSessions = ref.watch(
+      appPreferencesProvider.select(
+        (preferences) =>
+            preferences.valueOrNull?.hiddenSessions[widget.server?.id],
+      ),
+    );
+    final visibleSessions = _sessions
+        .where((session) => !(hiddenSessions?.containsKey(session.id) ?? false))
+        .toList();
     return Column(
       children: [
         Padding(
@@ -326,14 +396,14 @@ class _ServerSessionsState extends ConsumerState<_ServerSessions> {
                   onRefresh: _refresh,
                   child: ListView.builder(
                     physics: const AlwaysScrollableScrollPhysics(),
-                    itemCount: _sessions.length + 1,
+                    itemCount: visibleSessions.length + 1,
                     itemBuilder: (context, index) {
-                      if (index == _sessions.length) {
+                      if (index == visibleSessions.length) {
                         return Padding(
                           padding: const EdgeInsets.all(24),
                           child: Column(
                             children: [
-                              if (_sessions.isEmpty &&
+                              if (visibleSessions.isEmpty &&
                                   !_loading &&
                                   _error == null)
                                 Text(
@@ -352,7 +422,7 @@ class _ServerSessionsState extends ConsumerState<_ServerSessions> {
                           ),
                         );
                       }
-                      final session = _sessions[index];
+                      final session = visibleSessions[index];
                       return ListTile(
                         title: Text(
                           session.title.isEmpty ? session.id : session.title,
@@ -365,7 +435,22 @@ class _ServerSessionsState extends ConsumerState<_ServerSessions> {
                               relativeTime(session.updatedAt!),
                           ].where((value) => value.isNotEmpty).join(' · '),
                         ),
-                        trailing: _SessionStatus(status: session.status),
+                        trailing: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            _SessionStatus(status: session.status),
+                            IconButton(
+                              tooltip: 'Session options',
+                              onPressed: _opening
+                                  ? null
+                                  : () => _sessionActions(session),
+                              icon: const Icon(Icons.more_vert),
+                            ),
+                          ],
+                        ),
+                        onLongPress: _opening
+                            ? null
+                            : () => _sessionActions(session),
                         onTap: blocked ? null : () => _open(session),
                       );
                     },

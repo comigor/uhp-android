@@ -264,7 +264,7 @@ void main() {
         expect(fixture.alarms, isEmpty);
       });
       await tester.pumpAndSettle();
-      expect(find.text('Partial answer'), findsOneWidget);
+      expect(find.text('Partial answer', findRichText: true), findsOneWidget);
       expect(find.text('Server still working…'), findsOneWidget);
       expect(
         tester
@@ -289,8 +289,8 @@ void main() {
         expect(fixture.alarms, isEmpty);
       });
       await tester.pumpAndSettle();
-      expect(find.text('Final answer'), findsOneWidget);
-      expect(find.text('Partial answer'), findsNothing);
+      expect(find.text('Final answer', findRichText: true), findsOneWidget);
+      expect(find.text('Partial answer', findRichText: true), findsNothing);
       expect(
         find.text('input: 2 · output: 3 · total: 5 tokens'),
         findsOneWidget,
@@ -443,7 +443,7 @@ void main() {
     });
     await tester.pumpAndSettle();
     expect(calls, 2);
-    expect(find.text('Final answer'), findsOneWidget);
+    expect(find.text('Final answer', findRichText: true), findsOneWidget);
     expect(fixture.alarms.where((alarm) => alarm.isActive), isEmpty);
     await tester.pumpWidget(const SizedBox());
     await tester.runAsync(fixture.dispose);

@@ -199,7 +199,10 @@ void main() {
         container,
         () => tester.tap(find.text('Remote discussion')),
       );
-      expect(find.text('Partial server answer'), findsOneWidget);
+      expect(
+        find.text('Partial server answer', findRichText: true),
+        findsOneWidget,
+      );
       final originalId = container.read(threadProvider)!.id;
       expect(
         tester
@@ -215,7 +218,10 @@ void main() {
         () => tester.tap(find.text('Refresh server session')),
       );
       expect(container.read(threadProvider)!.id, originalId);
-      expect(find.text('Complete server answer'), findsOneWidget);
+      expect(
+        find.text('Complete server answer', findRichText: true),
+        findsOneWidget,
+      );
       expect(
         tester
             .widget<TextField>(find.widgetWithText(TextField, 'Prompt'))
@@ -270,11 +276,11 @@ void main() {
       'First question',
     ]) {
       await tester.scrollUntilVisible(
-        find.text(message),
+        find.text(message, findRichText: true),
         100,
         scrollable: find.byType(Scrollable).first,
       );
-      expect(find.text(message), findsOneWidget);
+      expect(find.text(message, findRichText: true), findsOneWidget);
     }
   });
 

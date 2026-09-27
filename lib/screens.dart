@@ -428,7 +428,7 @@ class _TasksScreenState extends ConsumerState<TasksScreen> {
                         message.role,
                         style: Theme.of(context).textTheme.labelLarge,
                       ),
-                      SelectableText(message.text),
+                      MessageContent(role: message.role, text: message.text),
                       if (message.role == 'assistant')
                         if (message.status == TurnStatus.serverContinuing)
                           const Chip(
@@ -475,10 +475,10 @@ class ActiveTurnCard extends ConsumerWidget {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Text('user', style: Theme.of(context).textTheme.labelLarge),
-            Text(turn.input),
+            MessageContent(role: 'user', text: turn.input),
             const Divider(),
             Text(turn.stopping ? 'Stopping…' : 'assistant · running'),
-            SelectableText(turn.progress.text),
+            MessageContent(role: 'assistant', text: turn.progress.text),
             for (final tool in turn.progress.tools) Text('tool: $tool'),
           ],
         ),
@@ -529,110 +529,4 @@ String relativeTime(DateTime date) {
   if (age.inHours < 1) return '${age.inMinutes}m ago';
   if (age.inDays < 1) return '${age.inHours}h ago';
   return '${age.inDays}d ago';
-}
-
-class HistoryScreen extends ConsumerWidget {
-  const HistoryScreen({super.key});
-
-  @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final history = ref.watch(historyProvider);
-    final blocked =
-        ref.watch(taskBusyProvider) || ref.watch(unsavedThreadProvider) != null;
-    return history.when(
-      loading: () => const Center(child: CircularProgressIndicator()),
-      error: (error, _) => Center(child: Text('Cannot load history: $error')),
-      data: (threads) => threads.isEmpty
-          ? const Center(child: Text('No saved conversations.'))
-          : ListView.builder(
-              itemCount: threads.length,
-              itemBuilder: (context, index) {
-                final summary = threads[index];
-                return ListTile(
-                  title: Text(summary.title),
-                  subtitle: Text(
-                    '${summary.harnessName} · ${relativeTime(summary.updatedAt)}',
-                  ),
-                  onTap: blocked
-                      ? null
-                      : () async {
-                          try {
-                            final thread = await ref
-                                .read(threadStoreProvider)
-                                .read(summary.id);
-                            if (!context.mounted) return;
-                            if (thread == null) {
-                              throw const AppError(
-                                'This conversation is missing or malformed.',
-                              );
-                            }
-                            final servers = await ref.read(
-                              serversProvider.future,
-                            );
-                            if (!context.mounted) return;
-                            if (ref.read(taskBusyProvider) ||
-                                ref.read(unsavedThreadProvider) != null) {
-                              return;
-                            }
-                            ref.read(threadProvider.notifier).state = thread;
-                            await ref
-                                .read(appPreferencesProvider.notifier)
-                                .selectHarness(
-                                  thread.server.id,
-                                  thread.harnessId,
-                                );
-                            if (!context.mounted) return;
-                            ref.read(appDestinationProvider.notifier).state =
-                                AppDestination.chat;
-                            if (!servers.any((s) => s.id == thread.server.id)) {
-                              showMessage(
-                                ref,
-                                'The saved server profile was deleted. You can read this thread, but cannot continue.',
-                              );
-                            }
-                          } catch (error) {
-                            if (context.mounted) showMessage(ref, error);
-                          }
-                        },
-                  onLongPress: blocked
-                      ? null
-                      : () async {
-                          final confirmed = await showDialog<bool>(
-                            context: context,
-                            builder: (context) => AlertDialog(
-                              title: const Text('Delete conversation?'),
-                              content: Text(summary.title),
-                              actions: [
-                                TextButton(
-                                  onPressed: () =>
-                                      Navigator.pop(context, false),
-                                  child: const Text('Cancel'),
-                                ),
-                                TextButton(
-                                  onPressed: () => Navigator.pop(context, true),
-                                  child: const Text('Delete'),
-                                ),
-                              ],
-                            ),
-                          );
-                          if (confirmed != true || !context.mounted) return;
-                          try {
-                            await ref
-                                .read(threadStoreProvider)
-                                .delete(summary.id);
-                            if (!context.mounted) return;
-                            if (ref.read(threadProvider)?.id == summary.id) {
-                              ref.read(threadProvider.notifier).state = null;
-                            }
-                            ref.invalidate(historyProvider);
-                          } catch (error) {
-                            if (context.mounted) showMessage(ref, error);
-                          }
-                        },
-                  trailing: const Icon(Icons.chevron_right),
-                );
-              },
-            ),
-    );
-  }
 }

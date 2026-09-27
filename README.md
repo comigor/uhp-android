@@ -10,6 +10,8 @@ Android-only Flutter client for Unified Harness Protocol servers.
 - Harness configuration in Settings, backed by `GET /api/harness/v1/harnesses`.
 - Task creation backed by `POST /api/harness/v1/responses` with `stream: true` (SSE), live response text, tool activity, turn status, and token usage when reported by the server.
 - Saved conversation history, including partial turns, and session continuation via the last assistant message's `previous_response_id`.
+- Assistant Markdown with selectable text, language-labelled fenced code, horizontal code scrolling, and **Copy code**; prompts, titles, and feed rows remain literal text.
+- Device-local conversation rename, archive/unarchive, and deletion, plus per-server session hiding with restoration in Settings.
 - **Stop** cancels the local stream and requests server cancellation with `POST /api/harness/v1/sessions/{encodedSessionId}/cancel` when a session ID is known.
 - Server-scoped session browsing, transcript import, and continuation linked to persistent local history.
 - Per-request model overrides and faithful read-modify-write updates to harness default models.
@@ -68,7 +70,7 @@ Older profiles and conversation snapshots still load, but legacy authentication 
 3. Tap **New chat** to create a local thread and open the composer immediately. It uses the last-used harness for the selected server, falling back to the first available harness, with **Harness default** selected for the model. An unavailable server or empty harness list leaves the feed visible with an inline error and a Settings action.
 4. Enter a prompt and send it. Response text and tool activity update live; turn status and available token counts are shown. Use **Stop** to cancel a turn and retain its partial response. Moving the app to the background closes the local stream without cancelling server work. A turn with a known response ID is saved with its partial output as **Server still working…**, then checked when the app resumes.
 5. Enter another prompt and use **Continue** to send the last assistant message's `previous_response_id` against the same local thread. For local-only threads, if that assistant message has no response ID, the next request starts a fresh turn in the same thread; it never reuses an earlier assistant's ID. Linked server sessions instead require the server's latest continuation ID, as described below. **New task** starts a separate thread using the current harness.
-6. Back returns to the feed; its **Current chat** action reopens the active thread without interrupting a turn. Open **On-device** to restore a saved conversation; long-press and confirm to delete it. If its server profile was deleted, the transcript remains readable but continuation shows an error.
+6. Back returns to the feed; its **Current chat** action reopens the active thread without interrupting a turn. Open **On-device** to restore a saved conversation. Long-press a row or use its overflow action to rename, archive/unarchive, or delete it. If its server profile was deleted, the transcript remains readable but continuation shows an error.
 7. **Settings** is one scrollable page containing **Servers**, **Harnesses**, **Updater**, and **About**. Harness default-model editing and the existing updater are available there.
 
 If the server rejects streaming with a non-200 response or an error before any other SSE event, the app retries once with `stream: false` for legacy servers. Authentication failures are handled first and never trigger this fallback. After an accepted event, it never retries the turn as a non-streaming request. A successful non-SSE JSON response containing a response ID or output is treated as a completed legacy response, not retried. Completed SSE turns finish immediately without waiting for the server to close the connection.
@@ -89,6 +91,26 @@ The linked conversation opens in **Chat**. Continuation uses the server's `last_
 
 Open a linked thread from **On-device**, then use its server-session action to refresh the server transcript and status. This refresh action is disabled while a locally saved turn is server-continuing; use **Check now** instead. Other running sessions show a live note and disable sending until refreshed. Browsing does not subscribe to another client's live output.
 
+## Markdown rendering
+
+Assistant messages render headings, emphasis, lists, links, tables, inline code, and fenced code. An unfinished fence is safe to render while a response streams. Code blocks retain whitespace, use a monospace font, scroll horizontally, show a language label when supplied, and offer **Copy code** without fence markers. Streaming deltas rebuild the active-turn card, not the saved transcript cards. Prompts, conversation titles, session-feed rows, and release notes remain plain text.
+
+Links open a selectable URL dialog with **Copy link**, not an external browser. Image syntax becomes a plain resource description; untrusted output never fetches remote images or reads local image files.
+
+The one new direct dependency is [`flutter_markdown_plus`](https://pub.dev/packages/flutter_markdown_plus) 1.0.12, the maintained community continuation of Flutter's Markdown renderer under the BSD-3-Clause license. It provides native Flutter widgets and established Markdown parsing, including incomplete fences, rather than an HTML/WebView renderer or a handwritten parser. Its only newly resolved transitive package is `markdown` 7.3.1; Flutter, `meta`, and `path` were already present. No syntax-highlighting or URL-launcher dependency is added. Flutter bundles dependency license notices into the app.
+
+## Local conversation management
+
+In **On-device**, long-press a conversation or tap its overflow menu:
+
+- **Rename** persists a nonblank local title and updates the open chat header. A linked server session is never renamed; subsequent transcript refreshes and saved turns preserve the local title.
+- **Archive** hides the conversation from On-device by default without deleting messages. **Show archived**, at the bottom of the list, reveals muted archived rows with **Unarchive** available in their menu. The visibility toggle resets when leaving the local list; the archive flag persists across restarts.
+- **Delete** requires confirmation and removes the local thread file and index entry. Deleting the current chat clears it and leaves the feed visible. A linked session remains on the server and may be imported again.
+
+On a server-session row, **Hide from feed** removes it only from that server profile's feed on this device. Hidden session IDs and display titles persist separately from thread files. They do not delete or archive an imported On-device copy, and do not alter pagination cursors. Restore individual entries under **Settings → Servers → Hidden sessions** for the corresponding profile. These actions never send server rename, archive, hide, or delete requests.
+
+Management actions are disabled with an explanation while a local turn is running or a completed turn still needs a storage retry. Local threads awaiting server completion cannot be renamed, archived, or deleted until settled. Action sheets and confirmation dialogs recheck these guards before applying changes.
+
 ## Per-request model override
 
 The composer model chip defaults to **Harness default**: no `model` field is sent. Choose a model to override it for a request, including session continuations. Model choices come from `/api/harness/v1/harnesses/{hid}/models`, falling back to `/api/harness/v1/models` when the per-harness catalogue is unavailable or empty. This override does not change the saved harness configuration.
@@ -103,7 +125,7 @@ Saving first fetches the complete harness from `/api/harness/v1/harnesses/{hid}`
 
 Server profiles are stored on the device with `shared_preferences` under the key `servers_v1`. Conversations are saved as JSON files in the app's documents directory at `threads/<id>.json`. A lightweight `threads/index.json` lists saved conversations. Full threads are loaded when opened and scanned for unresolved turns when recovery checks run.
 
-Navigation preferences are stored separately under `app_preferences_v1`: the last server ID, last harness ID per server, and feed filter. Missing or malformed preferences use defaults without discarding profiles or conversations. A deleted remembered server falls back to the first saved profile; a missing remembered harness falls back to the first available harness for a new chat.
+Navigation preferences are stored separately under `app_preferences_v1`: the last server ID, last harness ID per server, feed filter, and hidden-session IDs/titles grouped by server profile. Missing or malformed preferences use defaults without discarding profiles or conversations. A deleted remembered server falls back to the first saved profile; a missing remembered harness falls back to the first available harness for a new chat.
 
 Completed, cancelled, server-continuing, and failed streamed turns are saved automatically, including partial response text, turn status, errors, response and session IDs, and token usage when available. Older interrupted records are preserved. Local-only threads use the last assistant message's response ID for continuation; a missing ID is not replaced by one from an earlier turn. Linked threads persist `serverSessionId`, `serverHarnessId`, `serverLastResponseId`, and `serverSessionStatus`, and refresh the server pointer before sending. Older saved messages without turn metadata load as completed. Opening a saved conversation restores its server and harness snapshot so it can be continued after restarting the app. Deleting a conversation removes both its thread file and its index entry.
 
@@ -120,7 +142,7 @@ Persistence uses preferences and files, not a database. There are no background 
 ## Known v1 limits
 
 - Saved credentials and conversation snapshots are not encrypted.
-- Server-session transcripts use tolerant text rendering, not rich server-specific event rendering.
+- Assistant text supports Markdown; non-text server-specific events are not rendered as rich media.
 - No background services, background polling, wakelocks, or push.
 
 ## Updates

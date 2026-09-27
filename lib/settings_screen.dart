@@ -132,25 +132,32 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                   itemCount: items.length,
                   itemBuilder: (context, index) {
                     final profile = items[index];
-                    return ListTile(
-                      leading: Icon(
-                        profile.id == server?.id
-                            ? Icons.check_circle
-                            : Icons.dns_outlined,
-                      ),
-                      title: Text(
-                        profile.name.isEmpty ? 'Unnamed server' : profile.name,
-                      ),
-                      subtitle: Text(
-                        '${profile.baseUrl}\n${profile.hasApiKey ? profile.testResult ?? 'Not tested' : 'API key required'}',
-                      ),
-                      isThreeLine: true,
-                      onTap: () => _selectServer(profile),
-                      trailing: IconButton(
-                        tooltip: 'Edit server',
-                        icon: const Icon(Icons.edit_outlined),
-                        onPressed: () => _editServer(profile),
-                      ),
+                    return Column(
+                      children: [
+                        ListTile(
+                          leading: Icon(
+                            profile.id == server?.id
+                                ? Icons.check_circle
+                                : Icons.dns_outlined,
+                          ),
+                          title: Text(
+                            profile.name.isEmpty
+                                ? 'Unnamed server'
+                                : profile.name,
+                          ),
+                          subtitle: Text(
+                            '${profile.baseUrl}\n${profile.hasApiKey ? profile.testResult ?? 'Not tested' : 'API key required'}',
+                          ),
+                          isThreeLine: true,
+                          onTap: () => _selectServer(profile),
+                          trailing: IconButton(
+                            tooltip: 'Edit server',
+                            icon: const Icon(Icons.edit_outlined),
+                            onPressed: () => _editServer(profile),
+                          ),
+                        ),
+                        _HiddenSessions(server: profile),
+                      ],
                     );
                   },
                 ),
@@ -270,6 +277,61 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
             ),
           ),
         ),
+      ],
+    );
+  }
+}
+
+class _HiddenSessions extends ConsumerWidget {
+  const _HiddenSessions({required this.server});
+
+  final ServerConfig server;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final sessions = ref.watch(
+      appPreferencesProvider.select(
+        (preferences) => preferences.valueOrNull?.hiddenSessions[server.id],
+      ),
+    );
+    final blocked =
+        ref.watch(taskBusyProvider) || ref.watch(unsavedThreadProvider) != null;
+    return ExpansionTile(
+      key: PageStorageKey('hidden-sessions:${server.id}'),
+      leading: const Icon(Icons.visibility_off_outlined),
+      title: const Text('Hidden sessions'),
+      subtitle: Text('${sessions?.length ?? 0} hidden on this device'),
+      children: [
+        if (blocked)
+          const Padding(
+            padding: EdgeInsets.all(16),
+            child: Text(_sessionManagementBlockedReason),
+          ),
+        if (sessions == null || sessions.isEmpty)
+          const Padding(
+            padding: EdgeInsets.all(16),
+            child: Text('No hidden sessions.'),
+          )
+        else
+          for (final session in sessions.entries)
+            ListTile(
+              title: Text(session.value.isEmpty ? session.key : session.value),
+              trailing: TextButton(
+                onPressed: blocked
+                    ? null
+                    : () async {
+                        if (_conversationBlocked(ref)) return;
+                        try {
+                          await ref
+                              .read(appPreferencesProvider.notifier)
+                              .restoreSession(server.id, session.key);
+                        } catch (error) {
+                          if (context.mounted) showMessage(ref, error);
+                        }
+                      },
+                child: const Text('Restore'),
+              ),
+            ),
       ],
     );
   }
