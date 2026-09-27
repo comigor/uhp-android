@@ -479,7 +479,7 @@ void main() {
       final request = buildCancelRequest(server, 'session/a b');
       expect(
         request.url.toString(),
-        'https://example.test/v1/sessions/session%2Fa%20b/cancel',
+        'https://example.test/api/harness/v1/sessions/session%2Fa%20b/cancel',
       );
       expect(request.method, 'POST');
       expect(jsonDecode(request.body), <String, dynamic>{});

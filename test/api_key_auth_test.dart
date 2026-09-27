@@ -115,13 +115,64 @@ Future<void> _perform(
 String _path(_Operation operation) => switch (operation) {
   _Operation.rest => '/api/harness/v1/harnesses',
   _Operation.sse => '/api/harness/v1/responses',
-  _Operation.cancel => '/v1/sessions/session%2Fa%20b/cancel',
+  _Operation.cancel => '/api/harness/v1/sessions/session%2Fa%20b/cancel',
 };
 
 Matcher _appError(String message) =>
     isA<AppError>().having((error) => error.message, 'message', message);
 
 void main() {
+  test('server API methods reach mounted endpoints over HTTP', () async {
+    final fixture = await _ApiServer.start((request) async {
+      final payload = switch (request.uri.path) {
+        '/api/harness/v1/sessions' => {'sessions': []},
+        '/api/harness/v1/sessions/s' => {'id': 's'},
+        '/api/harness/v1/sessions/s/turns' => {'turns': []},
+        '/api/harness/v1/models' ||
+        '/api/harness/v1/harnesses/h/models' => ['model'],
+        '/api/harness/v1/harnesses/h' => {
+          'id': 'h',
+          'name': 'Harness',
+          'base': 'base',
+          'defaultModel': 'model',
+        },
+        _ => null,
+      };
+      if (payload == null) {
+        request.response.statusCode = HttpStatus.temporaryRedirect;
+        request.response.headers.set(HttpHeaders.locationHeader, '/login');
+      } else {
+        request.response.headers.contentType = ContentType.json;
+        request.response.write(jsonEncode(payload));
+      }
+      await request.response.close();
+    });
+    final service = UhpService(fixture.client);
+    final profile = fixture.profile();
+    await service.fetchSessions(profile);
+    await service.fetchSession(profile, 's');
+    await service.fetchSessionTurns(profile, 's');
+    await service.fetchModels(profile);
+    await service.fetchModels(profile, harnessId: 'h');
+    await service.fetchHarnessDetail(profile, 'h');
+    await service.updateHarnessDefaultModel(profile, 'h', 'model');
+    expect(
+      fixture.requests.map(
+        (request) => '${request.method} ${request.uri.path}',
+      ),
+      [
+        'GET /api/harness/v1/sessions',
+        'GET /api/harness/v1/sessions/s',
+        'GET /api/harness/v1/sessions/s/turns',
+        'GET /api/harness/v1/models',
+        'GET /api/harness/v1/harnesses/h/models',
+        'GET /api/harness/v1/harnesses/h',
+        'GET /api/harness/v1/harnesses/h',
+        'PUT /api/harness/v1/harnesses/h',
+      ],
+    );
+  });
+
   for (final withPangolin in [false, true]) {
     test(
       'REST, SSE and cancel send bearer with Pangolin=$withPangolin',
@@ -209,7 +260,12 @@ void main() {
   );
 
   for (final operation in _Operation.values) {
-    for (final status in [HttpStatus.found, HttpStatus.seeOther]) {
+    for (final status in [
+      HttpStatus.found,
+      HttpStatus.seeOther,
+      HttpStatus.temporaryRedirect,
+      HttpStatus.permanentRedirect,
+    ]) {
       test(
         '${operation.name} maps $status without following or retrying',
         () async {

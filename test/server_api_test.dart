@@ -88,7 +88,7 @@ void main() {
       expect(next.sessions, isEmpty);
       expect(next.cursor, isNull);
       expect(requests.first.method, 'GET');
-      expect(requests.first.url.path, '/v1/sessions');
+      expect(requests.first.url.path, '/api/harness/v1/sessions');
       expect(requests.first.url.queryParameters, {
         'limit': '20',
         'harness': 'harness/one',
@@ -194,8 +194,8 @@ void main() {
       ('future_role', 'Future role output'),
     ]);
     expect(paths, [
-      'https://example.test/v1/sessions/session%2Fa%20b%3Fx',
-      'https://example.test/v1/sessions/session%2Fa%20b%3Fx/turns',
+      'https://example.test/api/harness/v1/sessions/session%2Fa%20b%3Fx',
+      'https://example.test/api/harness/v1/sessions/session%2Fa%20b%3Fx/turns',
     ]);
   });
 
@@ -228,7 +228,7 @@ void main() {
     for (final payload in payloads) {
       final service = UhpService(
         MockClient((request) async {
-          expect(request.url.path, '/v1/models');
+          expect(request.url.path, '/api/harness/v1/models');
           return _json(payload);
         }),
       );
@@ -255,7 +255,9 @@ void main() {
     expect(await service.fetchModels(_server, harnessId: 'h/a b'), [
       'harness-model',
     ]);
-    expect(paths, ['https://example.test/v1/harnesses/h%2Fa%20b/models']);
+    expect(paths, [
+      'https://example.test/api/harness/v1/harnesses/h%2Fa%20b/models',
+    ]);
   });
 
   test(
@@ -266,7 +268,7 @@ void main() {
         final service = UhpService(
           MockClient((request) async {
             paths.add(request.url.path);
-            if (request.url.path.startsWith('/v1/harnesses/')) {
+            if (request.url.path.startsWith('/api/harness/v1/harnesses/')) {
               return _json(
                 status == 200 ? {'data': []} : {'error': 'unsupported'},
                 status,
@@ -282,7 +284,10 @@ void main() {
         expect(await service.fetchModels(_server, harnessId: 'h'), [
           'global-model',
         ]);
-        expect(paths, ['/v1/harnesses/h/models', '/v1/models']);
+        expect(paths, [
+          '/api/harness/v1/harnesses/h/models',
+          '/api/harness/v1/models',
+        ]);
       }
     },
   );
@@ -290,7 +295,7 @@ void main() {
   test(
     'model fallback never hides auth or arbitrary server failures',
     () async {
-      for (final status in [302, 303, 400, 401, 403, 429, 500]) {
+      for (final status in [302, 303, 307, 308, 400, 401, 403, 429, 500]) {
         final paths = <String>[];
         final service = UhpService(
           MockClient((request) async {
@@ -305,7 +310,7 @@ void main() {
         await expectLater(
           service.fetchModels(_server, harnessId: 'h'),
           throwsA(
-            status == 302 || status == 303 || status == 401
+            [302, 303, 307, 308, 401].contains(status)
                 ? isA<AuthException>()
                 : isA<ApiException>().having(
                     (error) => error.statusCode,
@@ -314,7 +319,7 @@ void main() {
                   ),
           ),
         );
-        expect(paths, ['/v1/harnesses/h/models']);
+        expect(paths, ['/api/harness/v1/harnesses/h/models']);
       }
     },
   );
@@ -348,7 +353,7 @@ void main() {
           methods.add(request.method);
           expect(
             request.url.toString(),
-            'https://example.test/v1/harnesses/h%2Fa%20b',
+            'https://example.test/api/harness/v1/harnesses/h%2Fa%20b',
           );
           if (request.method == 'GET') {
             return _json(
@@ -422,21 +427,24 @@ void main() {
   );
 
   test(
-    'every server API operation uses bearer and paired edge headers',
+    'every server API operation uses mounted paths and profile authentication',
     () async {
       final methods = <String>[];
       final service = UhpService(
         MockClient((request) async {
           methods.add('${request.method} ${request.url.path}');
+          expect(request.url.path, startsWith('/api/harness/v1/'));
           expect(request.headers['Authorization'], 'Bearer api-key');
           expect(request.headers['P-Access-Token-Id'], 'edge-id');
           expect(request.headers['P-Access-Token'], 'edge-token');
           expect(request.followRedirects, isFalse);
-          if (request.url.path == '/v1/sessions') {
+          if (request.url.path == '/api/harness/v1/sessions') {
             return _json({'sessions': []});
           }
           if (request.url.path.endsWith('/turns')) return _json({'turns': []});
-          if (request.url.path == '/v1/sessions/s') return _json({'id': 's'});
+          if (request.url.path == '/api/harness/v1/sessions/s') {
+            return _json({'id': 's'});
+          }
           if (request.url.path.endsWith('/models')) return _json(['model']);
           return _json({
             'id': 'h',
@@ -454,14 +462,14 @@ void main() {
       await service.fetchHarnessDetail(_server, 'h');
       await service.updateHarnessDefaultModel(_server, 'h', 'model');
       expect(methods, [
-        'GET /v1/sessions',
-        'GET /v1/sessions/s',
-        'GET /v1/sessions/s/turns',
-        'GET /v1/models',
-        'GET /v1/harnesses/h/models',
-        'GET /v1/harnesses/h',
-        'GET /v1/harnesses/h',
-        'PUT /v1/harnesses/h',
+        'GET /api/harness/v1/sessions',
+        'GET /api/harness/v1/sessions/s',
+        'GET /api/harness/v1/sessions/s/turns',
+        'GET /api/harness/v1/models',
+        'GET /api/harness/v1/harnesses/h/models',
+        'GET /api/harness/v1/harnesses/h',
+        'GET /api/harness/v1/harnesses/h',
+        'PUT /api/harness/v1/harnesses/h',
       ]);
     },
   );

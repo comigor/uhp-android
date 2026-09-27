@@ -10,7 +10,7 @@ Android-only Flutter client for Unified Harness Protocol servers.
 - Harness browser backed by `GET /api/harness/v1/harnesses`.
 - Task creation backed by `POST /api/harness/v1/responses` with `stream: true` (SSE), live response text, tool activity, turn status, and token usage when reported by the server.
 - Saved conversation history, including partial turns, and session continuation via the last assistant message's `previous_response_id`.
-- **Stop** cancels the local stream and requests server cancellation with `POST /v1/sessions/{encodedSessionId}/cancel` when a session ID is known.
+- **Stop** cancels the local stream and requests server cancellation with `POST /api/harness/v1/sessions/{encodedSessionId}/cancel` when a session ID is known.
 - Server-scoped session browsing, transcript import, and continuation linked to persistent local history.
 - Per-request model overrides and faithful read-modify-write updates to harness default models.
 - Error snackbars showing HTTP status and parsed `error` or `detail` text where available.
@@ -49,7 +49,7 @@ A profile without a nonblank API key shows **API key required**, even if it has 
 ### Authentication errors
 
 - **Missing API key:** `API key required`. Add the key before connecting.
-- **HTTP 302 or 303:** `Edge sign-in required: add the Pangolin token pair for this server.` The app does not follow redirects; check the edge pair and server URL.
+- **HTTP 302, 303, 307, or 308:** `Edge sign-in required: add the Pangolin token pair for this server.` The app does not follow redirects; check the edge pair and server URL.
 - **HTTP 401 with `error.type: authentication_error`:** `Server rejected the API key.` Check or replace the key in server Settings → Keys.
 - **Other HTTP 401 responses:** the HTTP error includes a bounded response-body excerpt so an edge failure is not mislabeled as an invalid API key.
 
@@ -79,7 +79,7 @@ For a new local task, before `response.created` supplies a session ID, **Stop** 
 
 Select a server, then open **Sessions**. The list shows title, model, status, harness name, and relative time when provided. Pull to refresh or use the refresh action; **Load more** passes the server cursor back unchanged. The harness filter limits the list to one harness. There is no polling; refresh manually to observe work completed elsewhere.
 
-Opening a session fetches its detail and turns from `/v1/sessions/{sid}` and `/v1/sessions/{sid}/turns`. Transcript rendering tolerates missing and additional fields. It creates or reuses a local thread linked by server profile, server URL, and session ID. Opening the same session does not create duplicate local history. Fresh remote transcript rows are shown alongside unmatched locally saved turn pairs, including partials. Exact text/role matches retain local metadata; without stable server turn IDs, differing partial and final replies are retained separately rather than guessed to be identical. An empty transcript does not erase saved messages.
+Opening a session fetches its detail and turns from `/api/harness/v1/sessions/{sid}` and `/api/harness/v1/sessions/{sid}/turns`. Transcript rendering tolerates missing and additional fields. It creates or reuses a local thread linked by server profile, server URL, and session ID. Opening the same session does not create duplicate local history. Fresh remote transcript rows are shown alongside unmatched locally saved turn pairs, including partials. Exact text/role matches retain local metadata; without stable server turn IDs, differing partial and final replies are retained separately rather than guessed to be identical. An empty transcript does not erase saved messages.
 
 The linked conversation opens in **Tasks**. Continuation uses the server's `last_response_id` and `harness_id`, not the currently selected task harness. A fresh detail check before sending prevents continuation into a session already marked running or in progress; a missing continuation ID blocks sending rather than silently starting a different session. This check cannot prevent another client starting work immediately afterward; server-side concurrency checks remain authoritative. Completed replies update the linked continuation pointer and are saved through the same atomic thread/index write path as local tasks. Stop, background interruption, partial-output persistence, and storage retries work as for ordinary tasks.
 
@@ -87,13 +87,13 @@ Open a linked thread from **History**, then use its server-session action to ref
 
 ## Per-request model override
 
-The composer model chip defaults to **Harness default**: no `model` field is sent. Choose a model to override it for a request, including session continuations. Model choices come from `/v1/harnesses/{hid}/models`, falling back to `/v1/models` when the per-harness catalogue is unavailable or empty. This override does not change the saved harness configuration.
+The composer model chip defaults to **Harness default**: no `model` field is sent. Choose a model to override it for a request, including session continuations. Model choices come from `/api/harness/v1/harnesses/{hid}/models`, falling back to `/api/harness/v1/models` when the per-harness catalogue is unavailable or empty. This override does not change the saved harness configuration.
 
 ## Model management
 
 In **Harnesses**, use the model-edit action for a harness. The editor shows its current default and read-only `maxStep` / `timeoutSeconds` when available. Choose a model and save to change its default for subsequent requests that omit a model override.
 
-Saving first fetches the complete harness from `/v1/harnesses/{hid}`, changes only `defaultModel`, then PUTs the full object back. Required `name` and immutable `base`, plus MCP servers, skills, plugins, environment, disabled tools, headers, and unknown fields are preserved. The returned `defaultModel` must match the requested value; otherwise the app reports an error. These other fields are not editable here. Read-modify-write has no cross-client conflict protection unless provided by the server; avoid simultaneous configuration edits.
+Saving first fetches the complete harness from `/api/harness/v1/harnesses/{hid}`, changes only `defaultModel`, then PUTs the full object back. Required `name` and immutable `base`, plus MCP servers, skills, plugins, environment, disabled tools, headers, and unknown fields are preserved. The returned `defaultModel` must match the requested value; otherwise the app reports an error. These other fields are not editable here. Read-modify-write has no cross-client conflict protection unless provided by the server; avoid simultaneous configuration edits.
 
 ## Local persistence and security
 

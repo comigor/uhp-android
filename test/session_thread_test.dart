@@ -433,7 +433,7 @@ void main() {
     await sent.future;
     await runner.cancel();
     await pending;
-    expect(cancelled, ['/v1/sessions/session-1/cancel']);
+    expect(cancelled, ['/api/harness/v1/sessions/session-1/cancel']);
     final linked = container.read(threadProvider)!;
     final restored = (await store.read(linked.id))!;
     expect(restored.messages.last.status, TurnStatus.cancelled);

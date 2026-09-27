@@ -238,7 +238,7 @@ class StreamingTurn {
     final request =
         http.AbortableRequest(
             'POST',
-            buildApiUri(_server.baseUrl, '/api/harness/v1/responses'),
+            buildApiUri(_server.baseUrl, '/v1/responses'),
             abortTrigger: abort.future,
           )
           ..headers.addAll(buildAuthHeaders(_server))

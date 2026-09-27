@@ -169,11 +169,11 @@ void main() {
               {'id': 'h1', 'name': 'Research'},
             ],
           },
-          '/v1/sessions' => {
+          '/api/harness/v1/sessions' => {
             'sessions': [session()],
           },
-          '/v1/sessions/s1' => session(),
-          '/v1/sessions/s1/turns' => {
+          '/api/harness/v1/sessions/s1' => session(),
+          '/api/harness/v1/sessions/s1/turns' => {
             'turns': [
               {'role': 'user', 'text': 'Question'},
               {'role': 'assistant', 'text': answer},
@@ -223,10 +223,10 @@ void main() {
     'model picker selects an override and resets for another conversation',
     (tester) async {
       final client = MockClient((request) async {
-        if (request.url.path == '/v1/harnesses/h1/models') {
+        if (request.url.path == '/api/harness/v1/harnesses/h1/models') {
           return http.Response('{}', 404);
         }
-        if (request.url.path == '/v1/models') {
+        if (request.url.path == '/api/harness/v1/models') {
           return http.Response('{"models":["model-a","model-b"]}', 200);
         }
         throw StateError('Unexpected ${request.url}');

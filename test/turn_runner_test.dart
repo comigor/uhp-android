@@ -76,7 +76,7 @@ void main() {
         if (request.url.path.endsWith('/cancel')) {
           cancelRequests++;
           expect(request.method, 'POST');
-          expect(request.url.path, '/v1/sessions/session-1/cancel');
+          expect(request.url.path, '/api/harness/v1/sessions/session-1/cancel');
           expect(request.headers['P-Access-Token'], 'token');
           expect(jsonDecode(request.body), <String, dynamic>{});
           return http.StreamedResponse(Stream.value(utf8.encode('{}')), 409);

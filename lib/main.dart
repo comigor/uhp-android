@@ -273,7 +273,7 @@ class UhpService {
     final abort = Completer<void>();
     final request = http.AbortableRequest(
       'GET',
-      buildApiUri(server.baseUrl, '/api/harness/v1/harnesses'),
+      buildApiUri(server.baseUrl, '/v1/harnesses'),
       abortTrigger: abort.future,
     );
     final http.Response response;
@@ -320,8 +320,10 @@ Map<String, String> buildAuthHeaders(ServerConfig server) {
   return headers;
 }
 
+const apiMount = '/api/harness';
+
 Uri buildApiUri(String baseUrl, String path) {
-  return Uri.parse('${normalizeBaseUrl(baseUrl)}$path');
+  return Uri.parse('${normalizeBaseUrl(baseUrl)}$apiMount$path');
 }
 
 String normalizeBaseUrl(String value) {

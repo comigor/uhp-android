@@ -2,6 +2,15 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:uhp_android/main.dart';
 
 void main() {
+  test('API URI joins the mount with or without a trailing base slash', () {
+    for (final base in ['https://example.test', 'https://example.test/']) {
+      expect(
+        buildApiUri(base, '/v1/sessions').toString(),
+        'https://example.test/api/harness/v1/sessions',
+      );
+    }
+  });
+
   test('extracts assistant output text in order', () {
     final payload = <String, dynamic>{
       'output': <Map<String, dynamic>>[

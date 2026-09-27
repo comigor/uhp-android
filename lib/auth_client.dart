@@ -16,7 +16,10 @@ class _ProfileClient extends http.BaseClient {
     request.followRedirects = false;
     request.headers.addAll(buildAuthHeaders(server));
     final response = await _client.send(request);
-    if (response.statusCode == 302 || response.statusCode == 303) {
+    if (response.statusCode == 302 ||
+        response.statusCode == 303 ||
+        response.statusCode == 307 ||
+        response.statusCode == 308) {
       await response.stream.listen(null).cancel();
       throw AuthException(
         response.statusCode,
