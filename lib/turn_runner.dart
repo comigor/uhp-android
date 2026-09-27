@@ -25,11 +25,12 @@ class TaskRunner {
   final Ref ref;
   StreamingTurn? _turn;
   ServerConfig? _server;
+  String? _linkedSessionId;
   Future<void>? _submission;
   TurnStatus? _stopRequested;
   bool _disposed = false;
 
-  Future<void> submit(String input) {
+  Future<void> submit(String input, {String? model}) {
     if (_submission != null) return _submission!;
     if (ref.read(unsavedThreadProvider) != null) {
       return Future.error(
@@ -44,7 +45,7 @@ class TaskRunner {
     final harness = thread == null
         ? ref.read(selectedHarnessProvider)
         : Harness(
-            id: thread.harnessId,
+            id: thread.serverHarnessId ?? thread.harnessId,
             name: thread.harnessName,
             baseLabel: '',
             defaultModel: thread.model ?? '',
@@ -54,9 +55,10 @@ class TaskRunner {
     }
     _stopRequested = null;
     _server = server;
+    _linkedSessionId = thread?.serverSessionId;
     ref.read(taskBusyProvider.notifier).state = true;
     ref.read(liveTurnProvider.notifier).state = LiveTurn(input: input.trim());
-    return _submission = _submit(input.trim(), thread, server, harness);
+    return _submission = _submit(input.trim(), thread, server, harness, model);
   }
 
   Future<void> _submit(
@@ -64,6 +66,7 @@ class TaskRunner {
     ConversationThread? thread,
     ServerConfig server,
     Harness harness,
+    String? model,
   ) async {
     ResponseRecord? record;
     Object? failure;
@@ -76,6 +79,34 @@ class TaskRunner {
       }
       if (_disposed) return;
       final service = ref.read(uhpServiceProvider);
+      if (thread?.serverSessionId != null) {
+        final session = await service.fetchSession(
+          server,
+          thread!.serverSessionId!,
+        );
+        if (_disposed) return;
+        if (session.id != thread.serverSessionId) {
+          throw const AppError('The server returned a different session.');
+        }
+        thread = thread.refreshServerSession(session);
+        ref.read(threadProvider.notifier).state = thread;
+        ref.read(unsavedThreadProvider.notifier).state = thread;
+        await savePending();
+        if (_disposed) return;
+        if (session.isRunning) {
+          throw const AppError(
+            'This server session is still running. Refresh it before sending.',
+          );
+        }
+        if (thread.lastResponseId?.trim().isNotEmpty != true) {
+          throw const AppError(
+            'This server session has no continuation response ID.',
+          );
+        }
+        if (session.harnessId.trim().isEmpty) {
+          throw const AppError('This server session has no harness ID.');
+        }
+      }
       if (_stopRequested != null) {
         record = ResponseRecord(
           prompt: input,
@@ -89,8 +120,9 @@ class TaskRunner {
           server,
           ResponseDraft(
             input: input,
-            harnessId: harness.id,
+            harnessId: thread?.serverHarnessId ?? harness.id,
             previousResponseId: thread?.lastResponseId,
+            model: model,
           ),
         );
         try {
@@ -125,17 +157,7 @@ class TaskRunner {
               prompt: input,
               record: record,
             )
-          : ConversationThread(
-              id: thread.id,
-              title: thread.title,
-              server: server,
-              harnessId: thread.harnessId,
-              harnessName: thread.harnessName,
-              model: thread.model,
-              createdAt: thread.createdAt,
-              updatedAt: thread.updatedAt,
-              messages: thread.messages,
-            ).appendTurn(input, record);
+          : thread.appendTurn(input, record);
       ref.read(threadProvider.notifier).state = updated;
       ref.read(liveTurnProvider.notifier).state = null;
       ref.read(unsavedThreadProvider.notifier).state = updated;
@@ -144,6 +166,7 @@ class TaskRunner {
     } finally {
       _turn = null;
       _server = null;
+      _linkedSessionId = null;
       _submission = null;
       if (!_disposed) {
         ref.read(liveTurnProvider.notifier).state = null;
@@ -172,7 +195,12 @@ class TaskRunner {
       );
     }
     final turn = _turn;
-    final sessionId = turn?.progress.sessionId ?? '';
+    final progressSessionId = turn?.progress.sessionId ?? '';
+    final sessionId = progressSessionId.isNotEmpty
+        ? progressSessionId
+        : turn != null
+        ? _linkedSessionId ?? ''
+        : '';
     // Start the server cancel request, but do not wait for its response to close
     // the stream. A slow cancel endpoint must not leave the SSE connection open.
     final cancellation = remote && _server != null && sessionId.isNotEmpty

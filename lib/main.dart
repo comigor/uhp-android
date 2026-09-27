@@ -14,13 +14,15 @@ part 'screens.dart';
 part 'streaming.dart';
 part 'turn_runner.dart';
 part 'auth_client.dart';
+part 'server_api.dart';
+part 'session_screens.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
   runApp(const ProviderScope(child: UhpApp()));
 }
 
-enum AppTab { servers, harnesses, tasks, history }
+enum AppTab { servers, harnesses, tasks, history, sessions }
 
 enum TurnStatus { running, completed, cancelled, interrupted, failed }
 
@@ -180,6 +182,7 @@ final harnessesProvider =
     StateNotifierProvider<HarnessesController, AsyncValue<List<Harness>>>((
       ref,
     ) {
+      ref.watch(selectedServerProvider);
       return HarnessesController(ref);
     });
 final threadProvider = StateProvider<ConversationThread?>((ref) => null);
@@ -196,18 +199,23 @@ class HarnessesController extends StateNotifier<AsyncValue<List<Harness>>> {
 
   final Ref _ref;
 
+  int _generation = 0;
+
   Future<void> refresh() async {
     final server = _ref.read(selectedServerProvider);
     if (server == null) {
       throw const AppError('Select a server first.');
     }
     state = const AsyncLoading();
+    final generation = ++_generation;
     try {
       final service = _ref.read(uhpServiceProvider);
       final harnesses = await service.fetchHarnesses(server);
-      if (mounted) state = AsyncData(harnesses);
+      if (mounted && generation == _generation) state = AsyncData(harnesses);
     } catch (error, stackTrace) {
-      if (mounted) state = AsyncError(error, stackTrace);
+      if (mounted && generation == _generation) {
+        state = AsyncError(error, stackTrace);
+      }
       rethrow;
     }
   }
@@ -241,11 +249,13 @@ class ResponseDraft {
     required this.input,
     this.harnessId,
     this.previousResponseId,
+    this.model,
   });
 
   final String input;
   final String? harnessId;
   final String? previousResponseId;
+  final String? model;
 }
 
 class UhpService {
@@ -397,6 +407,8 @@ Map<String, dynamic> buildResponseRequestBody(
   bool stream = false,
 }) {
   final body = <String, dynamic>{'input': draft.input, 'stream': stream};
+  final model = draft.model?.trim();
+  if (model != null && model.isNotEmpty) body['model'] = model;
   if (draft.harnessId != null && draft.harnessId!.isNotEmpty) {
     body['metadata'] = <String, dynamic>{'harness_id': draft.harnessId};
   }
@@ -473,6 +485,7 @@ class _AppShellState extends ConsumerState<AppShell>
         AppTab.harnesses => const HarnessesScreen(),
         AppTab.tasks => const TasksScreen(),
         AppTab.history => const HistoryScreen(),
+        AppTab.sessions => const SessionsScreen(),
       },
       bottomNavigationBar: NavigationBar(
         selectedIndex: tab.index,
@@ -492,6 +505,10 @@ class _AppShellState extends ConsumerState<AppShell>
             label: 'Tasks',
           ),
           NavigationDestination(icon: Icon(Icons.history), label: 'History'),
+          NavigationDestination(
+            icon: Icon(Icons.forum_outlined),
+            label: 'Sessions',
+          ),
         ],
       ),
     );

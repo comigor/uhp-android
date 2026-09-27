@@ -333,6 +333,25 @@ class HarnessesScreen extends ConsumerWidget {
                           '${harness.baseLabel}\n${harness.defaultModel}',
                         ),
                         isThreeLine: true,
+                        trailing: IconButton(
+                          tooltip: 'Edit default model',
+                          icon: const Icon(Icons.tune),
+                          onPressed: blocked
+                              ? null
+                              : () {
+                                  final server = ref.read(
+                                    selectedServerProvider,
+                                  );
+                                  if (server == null) return;
+                                  showDialog<void>(
+                                    context: context,
+                                    builder: (_) => _HarnessModelEditor(
+                                      server: server,
+                                      harness: harness,
+                                    ),
+                                  );
+                                },
+                        ),
                         onTap: blocked
                             ? null
                             : () {
@@ -362,141 +381,249 @@ class TasksScreen extends ConsumerStatefulWidget {
 
 class _TasksScreenState extends ConsumerState<TasksScreen> {
   final _prompt = TextEditingController();
+  String? _model;
+  Object? _modelScope;
+  bool _refreshing = false;
+
   @override
   void dispose() {
     _prompt.dispose();
     super.dispose();
   }
 
+  Future<void> _refreshSession(ConversationThread thread) async {
+    if (_refreshing || _conversationBlocked(ref)) return;
+    setState(() => _refreshing = true);
+    bool current() => mounted && identical(ref.read(threadProvider), thread);
+    try {
+      final servers = await ref.read(serversProvider.future);
+      if (!current() || _conversationBlocked(ref)) return;
+      ServerConfig? server;
+      for (final candidate in servers) {
+        if (candidate.id == thread.server.id &&
+            normalizeBaseUrl(candidate.baseUrl) ==
+                normalizeBaseUrl(thread.server.baseUrl)) {
+          server = candidate;
+          break;
+        }
+      }
+      if (server == null) {
+        throw const AppError(
+          'The saved server profile was deleted or changed. This thread is read-only.',
+        );
+      }
+      await _openServerSession(
+        ref,
+        server,
+        thread.serverSessionId!,
+        harnessName: thread.harnessName,
+        isCurrent: current,
+      );
+    } catch (error) {
+      if (mounted) showMessage(ref, error);
+    } finally {
+      if (mounted) setState(() => _refreshing = false);
+    }
+  }
+
+  Future<void> _chooseModel(
+    ServerConfig server,
+    String harnessId,
+    Object scope,
+  ) async {
+    final selection = await showDialog<_ModelSelection>(
+      context: context,
+      builder: (_) => _ModelPicker(
+        service: ref.read(uhpServiceProvider),
+        server: server,
+        harnessId: harnessId,
+        selected: _model,
+      ),
+    );
+    if (!mounted ||
+        _modelScope != scope ||
+        _conversationBlocked(ref) ||
+        selection == null) {
+      return;
+    }
+    setState(() => _model = selection.model);
+  }
+
   @override
   Widget build(BuildContext context) {
     final thread = ref.watch(threadProvider);
     final harness = ref.watch(selectedHarnessProvider);
+    final server = thread?.server ?? ref.watch(selectedServerProvider);
+    final harnessId = thread?.harnessId ?? harness?.id;
+    final scope = (
+      thread?.id,
+      server?.id,
+      server == null ? null : normalizeBaseUrl(server.baseUrl),
+      harnessId,
+    );
+    if (_modelScope != scope) {
+      _modelScope = scope;
+      _model = null;
+    }
     final busy = ref.watch(taskBusyProvider);
     final unsaved = ref.watch(unsavedThreadProvider) != null;
+    final running =
+        thread?.serverSessionId != null &&
+        const {
+          'running',
+          'in_progress',
+        }.contains(thread?.serverSessionStatus?.toLowerCase());
+    final blocked = busy || unsaved || running || _refreshing;
     final hasLiveTurn = ref.watch(
       liveTurnProvider.select((turn) => turn != null),
     );
     final messages = thread?.messages ?? const <ThreadMessage>[];
-    return Column(
-      children: [
-        Padding(
-          padding: const EdgeInsets.all(16),
-          child: Column(
-            children: [
-              Text(
-                thread == null
-                    ? 'Harness: ${harness?.name ?? 'none'}'
-                    : '${thread.title} · ${thread.harnessName}',
-              ),
-              TextField(
-                controller: _prompt,
-                minLines: 1,
-                maxLines: 3,
-                decoration: const InputDecoration(labelText: 'Prompt'),
-                enabled: !busy && !unsaved,
-              ),
-              Wrap(
-                spacing: 12,
-                children: [
-                  FilledButton(
-                    onPressed: busy || unsaved
-                        ? null
-                        : () async {
-                            final runner = ref.read(taskRunnerProvider);
-                            final messenger = ref.read(
-                              appScaffoldMessengerKeyProvider,
-                            );
-                            try {
-                              await runner.submit(_prompt.text);
-                              if (mounted) _prompt.clear();
-                            } catch (error) {
-                              messenger.currentState?.showSnackBar(
-                                SnackBar(content: Text('$error')),
-                              );
-                            }
-                          },
-                    child: Text(
-                      busy
-                          ? 'Working…'
-                          : thread == null
-                          ? 'Run task'
-                          : 'Continue',
+    return CustomScrollView(
+      slivers: [
+        SliverToBoxAdapter(
+          child: Padding(
+            padding: const EdgeInsets.all(16),
+            child: Column(
+              children: [
+                Text(
+                  thread == null
+                      ? 'Harness: ${harness?.name ?? 'none'}'
+                      : '${thread.title} · ${thread.harnessName}',
+                ),
+                if (thread?.model != null && thread!.model!.isNotEmpty)
+                  Text('Session model: ${thread.model}'),
+                if (thread?.serverSessionId != null) ...[
+                  _SessionStatus(status: thread!.serverSessionStatus ?? ''),
+                  if (running)
+                    const Text(
+                      'This session is running on the server. Refresh when it finishes to continue.',
                     ),
-                  ),
-                  if (busy) const StopTurnButton(),
-                  TextButton(
-                    onPressed: busy || unsaved
+                  TextButton.icon(
+                    icon: const Icon(Icons.refresh),
+                    label: Text(
+                      _refreshing ? 'Refreshing…' : 'Refresh server session',
+                    ),
+                    onPressed: busy || unsaved || _refreshing
                         ? null
-                        : () {
-                            ref.read(threadProvider.notifier).state = null;
-                          },
-                    child: const Text('New task'),
+                        : () => _refreshSession(thread),
                   ),
                 ],
-              ),
-              if (unsaved) ...[
-                const Text(
-                  'Completed turn not yet saved. Retry before leaving this conversation.',
-                ),
-                TextButton(
-                  onPressed: busy
+                ActionChip(
+                  avatar: const Icon(Icons.tune),
+                  label: Text('Model: ${_model ?? 'Harness default'}'),
+                  onPressed: blocked || server == null || harnessId == null
                       ? null
-                      : () async {
-                          try {
-                            await ref.read(taskRunnerProvider).savePending();
-                          } catch (error) {
-                            if (mounted) showMessage(ref, error);
-                          }
-                        },
-                  child: const Text('Retry storage write'),
+                      : () => _chooseModel(server, harnessId, scope),
                 ),
+                TextField(
+                  controller: _prompt,
+                  minLines: 1,
+                  maxLines: 3,
+                  decoration: const InputDecoration(labelText: 'Prompt'),
+                  enabled: !blocked,
+                ),
+                Wrap(
+                  spacing: 12,
+                  children: [
+                    FilledButton(
+                      onPressed: blocked
+                          ? null
+                          : () async {
+                              final runner = ref.read(taskRunnerProvider);
+                              final messenger = ref.read(
+                                appScaffoldMessengerKeyProvider,
+                              );
+                              try {
+                                await runner.submit(
+                                  _prompt.text,
+                                  model: _model,
+                                );
+                                if (mounted) _prompt.clear();
+                              } catch (error) {
+                                messenger.currentState?.showSnackBar(
+                                  SnackBar(content: Text('$error')),
+                                );
+                              }
+                            },
+                      child: Text(
+                        busy
+                            ? 'Working…'
+                            : thread == null
+                            ? 'Run task'
+                            : 'Continue',
+                      ),
+                    ),
+                    if (busy) const StopTurnButton(),
+                    TextButton(
+                      onPressed: busy || unsaved || _refreshing
+                          ? null
+                          : () {
+                              ref.read(threadProvider.notifier).state = null;
+                              setState(() => _model = null);
+                            },
+                      child: const Text('New task'),
+                    ),
+                  ],
+                ),
+                if (unsaved) ...[
+                  const Text(
+                    'Completed turn not yet saved. Retry before leaving this conversation.',
+                  ),
+                  TextButton(
+                    onPressed: busy
+                        ? null
+                        : () async {
+                            try {
+                              await ref.read(taskRunnerProvider).savePending();
+                            } catch (error) {
+                              if (mounted) showMessage(ref, error);
+                            }
+                          },
+                    child: const Text('Retry storage write'),
+                  ),
+                ],
               ],
-            ],
+            ),
           ),
         ),
-        Expanded(
-          child: messages.isEmpty && !hasLiveTurn
-              ? const Center(child: Text('No task history yet.'))
-              : ListView.builder(
-                  reverse: true,
-                  itemCount: messages.length + (hasLiveTurn ? 1 : 0),
-                  itemBuilder: (context, index) {
-                    if (hasLiveTurn && index == 0) {
-                      return const ActiveTurnCard();
-                    }
-                    final message =
-                        messages[messages.length -
-                            1 -
-                            index +
-                            (hasLiveTurn ? 1 : 0)];
-                    return Card(
-                      child: Padding(
-                        padding: const EdgeInsets.all(12),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(
-                              message.role,
-                              style: Theme.of(context).textTheme.labelLarge,
-                            ),
-                            SelectableText(message.text),
-                            if (message.role == 'assistant')
-                              Text(message.status.name),
-                            if (message.responseId != null)
-                              Text(
-                                'response_id=${message.responseId}',
-                                style: Theme.of(context).textTheme.bodySmall,
-                              ),
-                            if (message.usage != null)
-                              UsageText(usage: message.usage!),
-                          ],
-                        ),
+        if (messages.isEmpty && !hasLiveTurn)
+          const SliverFillRemaining(
+            hasScrollBody: false,
+            child: Center(child: Text('No task history yet.')),
+          )
+        else
+          SliverList.builder(
+            itemCount: messages.length + (hasLiveTurn ? 1 : 0),
+            itemBuilder: (context, index) {
+              if (hasLiveTurn && index == 0) return const ActiveTurnCard();
+              final message =
+                  messages[messages.length - 1 - index + (hasLiveTurn ? 1 : 0)];
+              return Card(
+                child: Padding(
+                  padding: const EdgeInsets.all(12),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        message.role,
+                        style: Theme.of(context).textTheme.labelLarge,
                       ),
-                    );
-                  },
+                      SelectableText(message.text),
+                      if (message.role == 'assistant')
+                        Text(message.status.name),
+                      if (message.responseId != null)
+                        Text(
+                          'response_id=${message.responseId}',
+                          style: Theme.of(context).textTheme.bodySmall,
+                        ),
+                      if (message.usage != null)
+                        UsageText(usage: message.usage!),
+                    ],
+                  ),
                 ),
-        ),
+              );
+            },
+          ),
       ],
     );
   }

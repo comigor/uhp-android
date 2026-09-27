@@ -21,10 +21,7 @@ class ThreadMessage {
   final DateTime createdAt;
 
   factory ThreadMessage.fromJson(Map<String, dynamic> json) {
-    final role = json['role'] as String;
-    if (role != 'user' && role != 'assistant') {
-      throw const FormatException('Invalid thread message role');
-    }
+    final role = json['role'] as String? ?? 'unknown';
     return ThreadMessage(
       role: role,
       text: json['text'] as String,
@@ -60,6 +57,10 @@ class ConversationThread {
     required this.harnessId,
     required this.harnessName,
     this.model,
+    this.serverSessionId,
+    this.serverHarnessId,
+    this.serverLastResponseId,
+    this.serverSessionStatus,
     required this.createdAt,
     required this.updatedAt,
     required List<ThreadMessage> messages,
@@ -71,11 +72,16 @@ class ConversationThread {
   final String harnessId;
   final String harnessName;
   final String? model;
+  final String? serverSessionId;
+  final String? serverHarnessId;
+  final String? serverLastResponseId;
+  final String? serverSessionStatus;
   final DateTime createdAt;
   final DateTime updatedAt;
   final List<ThreadMessage> messages;
 
   String? get lastResponseId {
+    if (serverSessionId != null) return serverLastResponseId;
     for (final message in messages.reversed) {
       if (message.role == 'assistant') return message.responseId;
     }
@@ -83,6 +89,27 @@ class ConversationThread {
   }
 
   ThreadSummary get summary => ThreadSummary.fromThread(this);
+
+  ConversationThread refreshServerSession(
+    ServerSession session, {
+    ServerConfig? server,
+    String? harnessName,
+    List<ThreadMessage>? messages,
+  }) => ConversationThread(
+    id: id,
+    title: session.title,
+    server: server ?? this.server,
+    harnessId: session.harnessId,
+    harnessName: harnessName ?? this.harnessName,
+    model: session.model,
+    serverSessionId: session.id,
+    serverHarnessId: session.harnessId,
+    serverLastResponseId: session.lastResponseId,
+    serverSessionStatus: session.status,
+    createdAt: createdAt,
+    updatedAt: DateTime.now().toUtc(),
+    messages: messages ?? this.messages,
+  );
 
   factory ConversationThread.start({
     required ServerConfig server,
@@ -129,6 +156,18 @@ class ConversationThread {
       harnessId: harnessId,
       harnessName: harnessName,
       model: model,
+      serverSessionId: serverSessionId,
+      serverHarnessId: serverHarnessId,
+      serverLastResponseId:
+          serverSessionId != null &&
+              record.status == TurnStatus.completed &&
+              record.responseId.trim().isNotEmpty
+          ? record.responseId
+          : serverLastResponseId,
+      serverSessionStatus:
+          serverSessionId != null && record.status == TurnStatus.completed
+          ? 'completed'
+          : serverSessionStatus,
       createdAt: createdAt,
       updatedAt: now,
       messages: [
@@ -159,6 +198,10 @@ class ConversationThread {
       harnessId: json['harnessId'] as String,
       harnessName: json['harnessName'] as String,
       model: json['model'] as String?,
+      serverSessionId: json['serverSessionId'] as String?,
+      serverHarnessId: json['serverHarnessId'] as String?,
+      serverLastResponseId: json['serverLastResponseId'] as String?,
+      serverSessionStatus: json['serverSessionStatus'] as String?,
       createdAt: DateTime.parse(json['createdAt'] as String),
       updatedAt: DateTime.parse(json['updatedAt'] as String),
       messages: (json['messages'] as List<dynamic>)
@@ -174,6 +217,10 @@ class ConversationThread {
     'harnessId': harnessId,
     'harnessName': harnessName,
     'model': model,
+    'serverSessionId': serverSessionId,
+    'serverHarnessId': serverHarnessId,
+    'serverLastResponseId': serverLastResponseId,
+    'serverSessionStatus': serverSessionStatus,
     'createdAt': createdAt.toUtc().toIso8601String(),
     'updatedAt': updatedAt.toUtc().toIso8601String(),
     'messages': messages.map((message) => message.toJson()).toList(),
@@ -280,19 +327,124 @@ class ThreadStore {
     return _serialize(() async => _readThread(await _directory(), id));
   }
 
+  Future<ConversationThread> linkServerSession({
+    required ServerConfig server,
+    required ServerSession session,
+    required List<SessionTurn> turns,
+    required String harnessName,
+  }) => _serialize(() async {
+    final directory = await _directory();
+    await directory.create(recursive: true);
+    await _recover(directory);
+    ConversationThread? existing;
+    for (final summary in await _loadIndex(directory, strict: true)) {
+      if (summary.serverId != server.id) continue;
+      final candidate = await _readThread(directory, summary.id, strict: true);
+      if (candidate?.serverSessionId == session.id &&
+          normalizeBaseUrl(candidate!.server.baseUrl) ==
+              normalizeBaseUrl(server.baseUrl)) {
+        existing = candidate;
+        break;
+      }
+    }
+    final now = DateTime.now().toUtc();
+    final imported = turns
+        .map(
+          (turn) => ThreadMessage(
+            role: turn.role,
+            text: turn.text,
+            sessionId: session.id,
+            createdAt: now,
+          ),
+        )
+        .toList();
+    final List<ThreadMessage> messages;
+    if (existing == null) {
+      messages = imported;
+    } else if (imported.isEmpty || imported.every((row) => row.text.isEmpty)) {
+      messages = existing.messages;
+    } else {
+      final local = existing.messages;
+      final matching = <(String, String), List<ThreadMessage>>{};
+      for (final row in local.reversed) {
+        matching.putIfAbsent((row.role, row.text), () => []).add(row);
+      }
+      // The server sequence is authoritative, but exact rows retain local
+      // response IDs, timestamps, usage, and interruption metadata.
+      messages = imported.map((row) {
+        final matches = matching[(row.role, row.text)];
+        return matches == null || matches.isEmpty ? row : matches.removeLast();
+      }).toList();
+      final remotePairs = <(String, String), int>{};
+      for (var i = 1; i < imported.length; i++) {
+        if (imported[i - 1].role == 'user' && imported[i].role == 'assistant') {
+          final pair = (imported[i - 1].text, imported[i].text);
+          remotePairs.update(pair, (count) => count + 1, ifAbsent: () => 1);
+        }
+      }
+      // Locally generated pairs absent from the server are durable history,
+      // especially cancelled partials that differ from the final remote text.
+      for (var i = 1; i < local.length; i++) {
+        final answer = local[i];
+        if (local[i - 1].role != 'user' ||
+            answer.role != 'assistant' ||
+            (answer.responseId == null &&
+                answer.status == TurnStatus.completed)) {
+          continue;
+        }
+        final pair = (local[i - 1].text, answer.text);
+        final represented = remotePairs[pair] ?? 0;
+        if (represented > 0) {
+          remotePairs[pair] = represented - 1;
+        } else {
+          messages.add(local[i - 1]);
+          messages.add(answer);
+        }
+      }
+    }
+    final linked = existing == null
+        ? ConversationThread(
+            id: newLocalId(),
+            title: session.title,
+            server: server,
+            harnessId: session.harnessId,
+            harnessName: harnessName,
+            model: session.model,
+            serverSessionId: session.id,
+            serverHarnessId: session.harnessId,
+            serverLastResponseId: session.lastResponseId,
+            serverSessionStatus: session.status,
+            createdAt: now,
+            updatedAt: now,
+            messages: messages,
+          )
+        : existing.refreshServerSession(
+            session,
+            server: server,
+            harnessName: harnessName,
+            messages: messages,
+          );
+    await _save(directory, linked);
+    return linked;
+  });
+
   Future<void> save(ConversationThread thread) {
     _validateThreadId(thread.id);
     return _serialize(() async {
       final directory = await _directory();
       await directory.create(recursive: true);
       await _recover(directory);
-      // The journal contains no conversation data or credentials. If either
-      // commit fails, recovery rebuilds only this entry from its actual file.
-      await _atomicWrite(_journal(directory), {'id': thread.id});
-      await _atomicWrite(_threadFile(directory, thread.id), thread.toJson());
-      await _updateIndex(directory, thread.id, thread.summary);
-      await _journal(directory).delete();
+      await _save(directory, thread);
     });
+  }
+
+  Future<void> _save(Directory directory, ConversationThread thread) async {
+    // The journal contains no conversation data or credentials. If either
+    // commit fails, recovery rebuilds only this entry from its actual file.
+    await _atomicWrite(_journal(directory), {'id': thread.id});
+    await _atomicWrite(_threadFile(directory, thread.id), thread.toJson());
+    await _updateIndex(directory, thread.id, thread.summary);
+    await _journal(directory).delete();
   }
 
   Future<void> delete(String id) {
