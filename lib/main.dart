@@ -20,13 +20,16 @@ part 'server_continuation.dart';
 part 'auth_client.dart';
 part 'server_api.dart';
 part 'session_screens.dart';
+part 'app_preferences.dart';
+part 'settings_screen.dart';
+part 'app_navigation.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
   runApp(const ProviderScope(child: UhpApp()));
 }
 
-enum AppTab { servers, harnesses, tasks, history, sessions }
+enum AppDestination { feed, chat, settings }
 
 enum TurnStatus {
   running,
@@ -193,7 +196,9 @@ final serversProvider =
     );
 
 final selectedServerProvider = StateProvider<ServerConfig?>((ref) => null);
-final selectedTabProvider = StateProvider<AppTab>((ref) => AppTab.servers);
+final appDestinationProvider = StateProvider<AppDestination>(
+  (ref) => AppDestination.feed,
+);
 final selectedHarnessProvider = StateProvider<Harness?>((ref) => null);
 final harnessesProvider =
     StateNotifierProvider<HarnessesController, AsyncValue<List<Harness>>>((
@@ -465,6 +470,9 @@ class AppShell extends ConsumerStatefulWidget {
 class _AppShellState extends ConsumerState<AppShell>
     with WidgetsBindingObserver {
   late final ServerContinuationController _continuation;
+  bool _initializing = true;
+  bool _addingServer = false;
+  Object? _startupError;
 
   @override
   void initState() {
@@ -474,6 +482,80 @@ class _AppShellState extends ConsumerState<AppShell>
     final state = WidgetsBinding.instance.lifecycleState;
     if (state == null || state == AppLifecycleState.resumed) {
       unawaited(_continuation.resume());
+    }
+    ref.listenManual(serversProvider, (_, profiles) {
+      if (!_initializing && !_addingServer && profiles.hasValue) {
+        _selectProfile(profiles.requireValue);
+      }
+    });
+    unawaited(Future<void>.microtask(_restore));
+  }
+
+  void _selectProfile(List<ServerConfig> profiles) {
+    final current = ref.read(selectedServerProvider);
+    final remembered = ref
+        .read(appPreferencesProvider)
+        .valueOrNull
+        ?.lastServerId;
+    final selected =
+        profiles.where((s) => s.id == current?.id).firstOrNull ??
+        profiles.where((s) => s.id == remembered).firstOrNull ??
+        profiles.firstOrNull;
+    if (identical(current, selected)) return;
+    ref.read(selectedServerProvider.notifier).state = selected;
+    if (current?.id != selected?.id || current?.baseUrl != selected?.baseUrl) {
+      ref.read(selectedHarnessProvider.notifier).state = null;
+    }
+    if (selected != null && remembered != selected.id) {
+      unawaited(
+        ref
+            .read(appPreferencesProvider.notifier)
+            .selectServer(selected.id)
+            .catchError((Object error) {
+              if (mounted) showMessage(ref, error);
+            }),
+      );
+    }
+  }
+
+  Future<void> _restore() async {
+    try {
+      final profiles = await ref.read(serversProvider.future);
+      await ref.read(appPreferencesProvider.future);
+      if (!mounted) return;
+      _selectProfile(profiles);
+      setState(() {
+        _initializing = false;
+        _startupError = null;
+      });
+      if (profiles.isEmpty) await _addFirstServer();
+    } catch (error) {
+      if (mounted) {
+        setState(() {
+          _initializing = false;
+          _startupError = error;
+        });
+      }
+    }
+  }
+
+  Future<void> _addFirstServer() async {
+    _addingServer = true;
+    try {
+      final server = ServerConfig(
+        id: newLocalId(),
+        name: 'New server',
+        baseUrl: '',
+      );
+      await ref.read(serversProvider.notifier).add(server);
+      if (!mounted) return;
+      await Navigator.of(context).push<void>(
+        MaterialPageRoute(builder: (_) => ServerEditor(server: server)),
+      );
+      if (!mounted) return;
+      _selectProfile(await ref.read(serversProvider.future));
+    } finally {
+      _addingServer = false;
     }
   }
 
@@ -508,44 +590,65 @@ class _AppShellState extends ConsumerState<AppShell>
 
   @override
   Widget build(BuildContext context) {
-    // Start loading profiles without rendering any default or stale profiles.
-    ref.read(serversProvider);
-    final tab = ref.watch(selectedTabProvider);
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('UHP Android'),
-        actions: [UpdateMenu(service: ref.watch(updateServiceProvider))],
-      ),
-      body: switch (tab) {
-        AppTab.servers => const ServersScreen(),
-        AppTab.harnesses => const HarnessesScreen(),
-        AppTab.tasks => const TasksScreen(),
-        AppTab.history => const HistoryScreen(),
-        AppTab.sessions => const SessionsScreen(),
+    final destination = ref.watch(appDestinationProvider);
+    final canReturnToChat =
+        ref.watch(threadProvider.select((thread) => thread != null)) ||
+        ref.watch(liveTurnProvider.select((turn) => turn != null));
+    return PopScope(
+      canPop: destination == AppDestination.feed,
+      onPopInvokedWithResult: (didPop, _) {
+        if (!didPop) {
+          ref.read(appDestinationProvider.notifier).state = AppDestination.feed;
+        }
       },
-      bottomNavigationBar: NavigationBar(
-        selectedIndex: tab.index,
-        onDestinationSelected: (index) =>
-            ref.read(selectedTabProvider.notifier).state = AppTab.values[index],
-        destinations: const [
-          NavigationDestination(
-            icon: Icon(Icons.storage_outlined),
-            label: 'Servers',
-          ),
-          NavigationDestination(
-            icon: Icon(Icons.account_tree_outlined),
-            label: 'Harnesses',
-          ),
-          NavigationDestination(
-            icon: Icon(Icons.task_alt_outlined),
-            label: 'Tasks',
-          ),
-          NavigationDestination(icon: Icon(Icons.history), label: 'History'),
-          NavigationDestination(
-            icon: Icon(Icons.forum_outlined),
-            label: 'Sessions',
-          ),
-        ],
+      child: Scaffold(
+        appBar: AppBar(
+          leading: destination == AppDestination.feed
+              ? null
+              : BackButton(
+                  onPressed: () =>
+                      ref.read(appDestinationProvider.notifier).state =
+                          AppDestination.feed,
+                ),
+          title: Text(switch (destination) {
+            AppDestination.feed => 'Sessions',
+            AppDestination.chat => 'Chat',
+            AppDestination.settings => 'Settings',
+          }),
+          actions: [
+            if (destination == AppDestination.feed && canReturnToChat)
+              IconButton(
+                tooltip: 'Current chat',
+                icon: const Icon(Icons.chat_bubble_outline),
+                onPressed: () =>
+                    ref.read(appDestinationProvider.notifier).state =
+                        AppDestination.chat,
+              ),
+            if (destination != AppDestination.settings)
+              IconButton(
+                tooltip: 'Settings',
+                icon: const Icon(Icons.settings_outlined),
+                onPressed: () =>
+                    ref.read(appDestinationProvider.notifier).state =
+                        AppDestination.settings,
+              ),
+          ],
+        ),
+        body: _initializing
+            ? const Center(child: CircularProgressIndicator())
+            : Column(
+                children: [
+                  if (_startupError != null)
+                    _FeedErrorCard(error: _startupError!, onRetry: _restore),
+                  Expanded(
+                    child: switch (destination) {
+                      AppDestination.feed => const SessionsFeed(),
+                      AppDestination.chat => const TasksScreen(),
+                      AppDestination.settings => const SettingsScreen(),
+                    },
+                  ),
+                ],
+              ),
       ),
     );
   }

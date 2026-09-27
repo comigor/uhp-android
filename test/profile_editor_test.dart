@@ -9,6 +9,16 @@ import 'package:uhp_android/main.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 
+class _ProfileTestApp extends ConsumerWidget {
+  const _ProfileTestApp();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) => MaterialApp(
+    scaffoldMessengerKey: ref.watch(appScaffoldMessengerKeyProvider),
+    home: const Scaffold(body: SettingsScreen()),
+  );
+}
+
 void main() {
   testWidgets(
     'profile edits persist without a save action or stable widget tree',
@@ -19,7 +29,7 @@ void main() {
       addTearDown(tester.view.resetPhysicalSize);
       addTearDown(tester.view.resetDevicePixelRatio);
 
-      await tester.pumpWidget(const ProviderScope(child: UhpApp()));
+      await tester.pumpWidget(const ProviderScope(child: _ProfileTestApp()));
       await tester.pumpAndSettle();
       await tester.tap(find.text('Add server'));
       await tester.pumpAndSettle();
@@ -50,7 +60,7 @@ void main() {
       expect(tester.takeException(), isNull);
 
       await tester.pumpWidget(const SizedBox());
-      await tester.pumpWidget(const ProviderScope(child: UhpApp()));
+      await tester.pumpWidget(const ProviderScope(child: _ProfileTestApp()));
       await tester.pumpAndSettle();
       expect(find.text('Restart-safe profile'), findsOneWidget);
       await tester.tap(find.byTooltip('Edit server'));
@@ -78,7 +88,7 @@ void main() {
       expect(find.text('No saved servers. Add one to begin.'), findsOneWidget);
 
       await tester.pumpWidget(const SizedBox());
-      await tester.pumpWidget(const ProviderScope(child: UhpApp()));
+      await tester.pumpWidget(const ProviderScope(child: _ProfileTestApp()));
       await tester.pumpAndSettle();
       expect(find.text('No saved servers. Add one to begin.'), findsOneWidget);
     },
@@ -104,7 +114,7 @@ void main() {
     await tester.pumpWidget(
       ProviderScope(
         overrides: [httpClientProvider.overrideWithValue(client)],
-        child: const UhpApp(),
+        child: const _ProfileTestApp(),
       ),
     );
     await tester.pumpAndSettle();
@@ -156,12 +166,12 @@ void main() {
     await tester.pumpWidget(
       ProviderScope(
         overrides: [httpClientProvider.overrideWithValue(client)],
-        child: const UhpApp(),
+        child: const _ProfileTestApp(),
       ),
     );
     await tester.pumpAndSettle();
     final container = ProviderScope.containerOf(
-      tester.element(find.byType(UhpApp)),
+      tester.element(find.byType(_ProfileTestApp)),
     );
     expect(find.textContaining('API key required'), findsOneWidget);
     expect(find.textContaining('4 harnesses'), findsNothing);
@@ -241,7 +251,7 @@ void main() {
       await tester.pumpWidget(
         ProviderScope(
           overrides: [httpClientProvider.overrideWithValue(client)],
-          child: const UhpApp(),
+          child: const _ProfileTestApp(),
         ),
       );
       await tester.pumpAndSettle();

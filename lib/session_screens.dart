@@ -39,69 +39,98 @@ Future<void> _openServerSession(
     defaultModel: thread.model ?? '',
   );
   ref.invalidate(historyProvider);
-  ref.read(selectedTabProvider.notifier).state = AppTab.tasks;
+  ref.read(appDestinationProvider.notifier).state = AppDestination.chat;
+  unawaited(
+    ref
+        .read(appPreferencesProvider.notifier)
+        .selectHarness(server.id, thread.harnessId)
+        .catchError((Object error) {
+          if (ref.context.mounted) showMessage(ref, error);
+        }),
+  );
 }
 
-class SessionsScreen extends ConsumerWidget {
-  const SessionsScreen({super.key});
+class SessionsFeed extends ConsumerWidget {
+  const SessionsFeed({super.key});
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final server = ref.watch(selectedServerProvider);
-    if (server == null) {
-      return const Center(child: Text('Select a server to browse sessions.'));
-    }
-    return _ServerSessions(key: ObjectKey(server), server: server);
+    final filter = ref.watch(
+      appPreferencesProvider.select(
+        (preferences) => preferences.valueOrNull?.feedFilter ?? 'all',
+      ),
+    );
+    return _ServerSessions(
+      key: ValueKey((server, filter)),
+      server: server,
+      filter: filter,
+    );
   }
 }
 
 class _ServerSessions extends ConsumerStatefulWidget {
-  const _ServerSessions({super.key, required this.server});
-  final ServerConfig server;
+  const _ServerSessions({
+    super.key,
+    required this.server,
+    required this.filter,
+  });
+  final ServerConfig? server;
+  final String filter;
   @override
   ConsumerState<_ServerSessions> createState() => _ServerSessionsState();
 }
 
 class _ServerSessionsState extends ConsumerState<_ServerSessions> {
   List<ServerSession> _sessions = const [];
-  List<Harness> _harnesses = const [];
-  String? _harnessId;
   String? _cursor;
   Object? _error;
-  Object? _harnessError;
+  Object? _newChatError;
   bool _loading = false;
   bool _opening = false;
   int _generation = 0;
 
+  bool get _onDevice => widget.filter == 'on-device';
+  String? get _harnessId => widget.filter.startsWith('harness:')
+      ? widget.filter.substring('harness:'.length)
+      : null;
+  bool get _current =>
+      mounted && identical(ref.read(selectedServerProvider), widget.server);
+
   @override
   void initState() {
     super.initState();
-    _load();
-    _loadHarnesses();
+    if (!_onDevice) _load();
+    // Shared with Settings; never make a separate connection/test request.
+    if (widget.server != null &&
+        (ref.read(harnessesProvider).valueOrNull?.isEmpty ?? true) &&
+        !ref.read(harnessesProvider).isLoading) {
+      unawaited(Future<void>.microtask(_loadHarnesses));
+    }
   }
 
-  bool get _current =>
-      mounted &&
-      ref.read(selectedServerProvider) != null &&
-      identical(ref.read(selectedServerProvider), widget.server);
-
   Future<void> _loadHarnesses() async {
+    if (!_current || widget.server == null) return;
     try {
-      final items = await ref
-          .read(uhpServiceProvider)
-          .fetchHarnesses(widget.server);
-      if (_current) {
-        setState(() {
-          _harnesses = items;
-          _harnessError = null;
-        });
-      }
-    } catch (error) {
-      if (_current) setState(() => _harnessError = error);
+      await ref.read(harnessesProvider.notifier).refresh();
+    } catch (_) {
+      // The shared provider exposes the error in the feed and Settings.
+    }
+  }
+
+  Future<void> _refresh() async {
+    if (_opening) return;
+    if (_onDevice) {
+      ref.invalidate(historyProvider);
+      await ref.read(historyProvider.future);
+    } else {
+      await Future.wait([_load(), _loadHarnesses()]);
     }
   }
 
   Future<void> _load({bool more = false}) async {
+    final server = widget.server;
+    if (server == null || _onDevice) return;
     final generation = ++_generation;
     final cursor = more ? _cursor : null;
     setState(() {
@@ -111,18 +140,21 @@ class _ServerSessionsState extends ConsumerState<_ServerSessions> {
     try {
       final page = await ref
           .read(uhpServiceProvider)
-          .fetchSessions(widget.server, cursor: cursor, harnessId: _harnessId);
+          .fetchSessions(server, cursor: cursor, harnessId: _harnessId);
       if (!_current || generation != _generation) return;
+      final merged = {
+        if (more)
+          for (final item in _sessions) item.id: item,
+        for (final item in page.sessions) item.id: item,
+      };
+      final items = merged.values.toList();
+      items.sort((a, b) {
+        if (a.updatedAt == null) return b.updatedAt == null ? 0 : 1;
+        if (b.updatedAt == null) return -1;
+        return b.updatedAt!.compareTo(a.updatedAt!);
+      });
       setState(() {
-        if (more) {
-          final merged = {for (final item in _sessions) item.id: item};
-          for (final item in page.sessions) {
-            merged[item.id] = item;
-          }
-          _sessions = merged.values.toList(growable: false);
-        } else {
-          _sessions = page.sessions;
-        }
+        _sessions = items;
         _cursor = page.cursor == cursor ? null : page.cursor;
       });
     } catch (error) {
@@ -134,21 +166,24 @@ class _ServerSessionsState extends ConsumerState<_ServerSessions> {
     }
   }
 
-  String _harnessName(String id) {
-    for (final harness in _harnesses) {
-      if (harness.id == id) return harness.name;
-    }
-    return id;
-  }
+  String _harnessName(String id) =>
+      ref
+          .read(harnessesProvider)
+          .valueOrNull
+          ?.where((harness) => harness.id == id)
+          .firstOrNull
+          ?.name ??
+      id;
 
   Future<void> _open(ServerSession session) async {
-    if (_opening || _conversationBlocked(ref)) return;
+    final server = widget.server;
+    if (server == null || _opening || _conversationBlocked(ref)) return;
     final generation = _generation;
     setState(() => _opening = true);
     try {
       await _openServerSession(
         ref,
-        widget.server,
+        server,
         session.id,
         harnessName: _harnessName(session.harnessId),
         isCurrent: () => _current && generation == _generation,
@@ -160,60 +195,119 @@ class _ServerSessionsState extends ConsumerState<_ServerSessions> {
     }
   }
 
+  Future<void> _newChat() async {
+    if (_opening || _conversationBlocked(ref)) return;
+    setState(() {
+      _opening = true;
+      _newChatError = null;
+    });
+    try {
+      await startNewChat(ref);
+    } catch (error) {
+      if (_current) setState(() => _newChatError = error);
+    } finally {
+      if (mounted) setState(() => _opening = false);
+    }
+  }
+
+  Future<void> _filter(String value) async {
+    try {
+      await ref.read(appPreferencesProvider.notifier).setFeedFilter(value);
+    } catch (error) {
+      if (mounted) showMessage(ref, error);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
+    final harnesses = ref.watch(harnessesProvider);
     final conversationBlocked =
         ref.watch(taskBusyProvider) || ref.watch(unsavedThreadProvider) != null;
     final blocked = conversationBlocked || _opening;
+    final error = _error ?? harnesses.error;
     return Column(
       children: [
         Padding(
-          padding: const EdgeInsets.all(12),
+          padding: const EdgeInsets.fromLTRB(16, 4, 8, 4),
           child: Row(
             children: [
               Expanded(
-                child: DropdownButtonFormField<String>(
-                  initialValue: _harnessId ?? '',
-                  isExpanded: true,
-                  decoration: const InputDecoration(
-                    labelText: 'Harness filter',
-                  ),
-                  items: [
-                    const DropdownMenuItem(
-                      value: '',
-                      child: Text('All harnesses'),
-                    ),
-                    for (final harness in _harnesses)
-                      DropdownMenuItem(
-                        value: harness.id,
-                        child: Text(harness.name),
-                      ),
-                  ],
-                  onChanged: _opening
-                      ? null
-                      : (value) {
-                          setState(() {
-                            _harnessId = value == '' ? null : value;
-                            _sessions = [];
-                            _cursor = null;
-                          });
-                          _load();
-                        },
+                child: Text(
+                  widget.server?.name ?? 'On this device',
+                  style: Theme.of(context).textTheme.titleMedium,
                 ),
               ),
               IconButton(
                 tooltip: 'Refresh sessions',
-                onPressed: _loading || _opening
-                    ? null
-                    : () {
-                        _load();
-                        _loadHarnesses();
-                      },
+                onPressed: _loading || _opening ? null : _refresh,
                 icon: const Icon(Icons.refresh),
+              ),
+              FilledButton.icon(
+                onPressed: blocked ? null : _newChat,
+                icon: const Icon(Icons.add),
+                label: const Text('New chat'),
               ),
             ],
           ),
         ),
+        SingleChildScrollView(
+          scrollDirection: Axis.horizontal,
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+          child: Row(
+            spacing: 8,
+            children: [
+              ChoiceChip(
+                label: const Text('All'),
+                selected: widget.filter == 'all',
+                onSelected: _opening ? null : (_) => _filter('all'),
+              ),
+              for (final harness in harnesses.valueOrNull ?? const <Harness>[])
+                ChoiceChip(
+                  label: Text(harness.name),
+                  selected: _harnessId == harness.id,
+                  onSelected: _opening
+                      ? null
+                      : (_) => _filter('harness:${harness.id}'),
+                ),
+              if (_harnessId != null &&
+                  !(harnesses.valueOrNull ?? const <Harness>[]).any(
+                    (harness) => harness.id == _harnessId,
+                  ))
+                ChoiceChip(
+                  label: Text(_harnessId!),
+                  selected: true,
+                  onSelected: _opening ? null : (_) => _filter('all'),
+                ),
+              ChoiceChip(
+                label: const Text('On-device'),
+                selected: _onDevice,
+                onSelected: _opening ? null : (_) => _filter('on-device'),
+              ),
+            ],
+          ),
+        ),
+        if (error != null) _FeedErrorCard(error: error, onRetry: _refresh),
+        if (_newChatError != null)
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16),
+            child: Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    '$_newChatError',
+                    maxLines: 3,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+                TextButton(
+                  onPressed: () =>
+                      ref.read(appDestinationProvider.notifier).state =
+                          AppDestination.settings,
+                  child: const Text('Open Settings'),
+                ),
+              ],
+            ),
+          ),
         if (_loading || _opening) const LinearProgressIndicator(),
         if (conversationBlocked)
           const Padding(
@@ -223,60 +317,104 @@ class _ServerSessionsState extends ConsumerState<_ServerSessions> {
             ),
           ),
         Expanded(
-          child: RefreshIndicator(
-            onRefresh: () async {
-              if (_opening) return;
-              await Future.wait([_load(), _loadHarnesses()]);
-            },
-            child: ListView.builder(
-              physics: const AlwaysScrollableScrollPhysics(),
-              itemCount: _sessions.length + 1,
-              itemBuilder: (context, index) {
-                if (index == _sessions.length) {
-                  return Padding(
-                    padding: const EdgeInsets.all(16),
-                    child: Column(
-                      children: [
-                        if (_harnessError != null)
-                          Text('Harness names unavailable: $_harnessError'),
-                        if (_error != null)
-                          Text('Cannot load sessions: $_error'),
-                        if (_sessions.isEmpty && !_loading && _error == null)
-                          const Text('No server sessions.'),
-                        if (_cursor != null)
-                          OutlinedButton(
-                            onPressed: _loading || _opening
-                                ? null
-                                : () => _load(more: true),
-                            child: const Text('Load more'),
+          child: _onDevice
+              ? RefreshIndicator(
+                  onRefresh: _refresh,
+                  child: const HistoryScreen(),
+                )
+              : RefreshIndicator(
+                  onRefresh: _refresh,
+                  child: ListView.builder(
+                    physics: const AlwaysScrollableScrollPhysics(),
+                    itemCount: _sessions.length + 1,
+                    itemBuilder: (context, index) {
+                      if (index == _sessions.length) {
+                        return Padding(
+                          padding: const EdgeInsets.all(24),
+                          child: Column(
+                            children: [
+                              if (_sessions.isEmpty &&
+                                  !_loading &&
+                                  _error == null)
+                                Text(
+                                  widget.server == null
+                                      ? 'Add a server in Settings, or browse On-device.'
+                                      : 'No server sessions yet.',
+                                ),
+                              if (_cursor != null)
+                                OutlinedButton(
+                                  onPressed: _loading || _opening
+                                      ? null
+                                      : () => _load(more: true),
+                                  child: const Text('Load more'),
+                                ),
+                            ],
                           ),
-                      ],
-                    ),
-                  );
-                }
-                final session = _sessions[index];
-                return ListTile(
-                  title: Text(
-                    session.title.isEmpty ? session.id : session.title,
+                        );
+                      }
+                      final session = _sessions[index];
+                      return ListTile(
+                        title: Text(
+                          session.title.isEmpty ? session.id : session.title,
+                        ),
+                        subtitle: Text(
+                          [
+                            _harnessName(session.harnessId),
+                            if (session.model.isNotEmpty) session.model,
+                            if (session.updatedAt != null)
+                              relativeTime(session.updatedAt!),
+                          ].where((value) => value.isNotEmpty).join(' · '),
+                        ),
+                        trailing: _SessionStatus(status: session.status),
+                        onTap: blocked ? null : () => _open(session),
+                      );
+                    },
                   ),
-                  subtitle: Text(
-                    [
-                      _harnessName(session.harnessId),
-                      if (session.model.isNotEmpty) session.model,
-                      if (session.updatedAt != null)
-                        relativeTime(session.updatedAt!),
-                    ].where((value) => value.isNotEmpty).join(' · '),
-                  ),
-                  trailing: _SessionStatus(status: session.status),
-                  onTap: blocked ? null : () => _open(session),
-                );
-              },
-            ),
-          ),
+                ),
         ),
       ],
     );
   }
+}
+
+class _FeedErrorCard extends ConsumerWidget {
+  const _FeedErrorCard({required this.error, required this.onRetry});
+  final Object error;
+  final Future<void> Function() onRetry;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) => Card(
+    margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+    child: Padding(
+      padding: const EdgeInsets.all(12),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text('$error', maxLines: 3, overflow: TextOverflow.ellipsis),
+          Row(
+            children: [
+              TextButton(
+                onPressed: () async {
+                  try {
+                    await onRetry();
+                  } catch (error) {
+                    if (context.mounted) showMessage(ref, error);
+                  }
+                },
+                child: const Text('Retry'),
+              ),
+              TextButton(
+                onPressed: () =>
+                    ref.read(appDestinationProvider.notifier).state =
+                        AppDestination.settings,
+                child: const Text('Edit server'),
+              ),
+            ],
+          ),
+        ],
+      ),
+    ),
+  );
 }
 
 class _SessionStatus extends StatelessWidget {

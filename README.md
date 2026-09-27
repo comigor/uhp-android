@@ -4,10 +4,10 @@ Android-only Flutter client for Unified Harness Protocol servers.
 
 ## Features
 
-- Dark-first Material 3 UI with separate screens for servers, harnesses, tasks, history, and server sessions.
-- Persistent server profiles, restored after restarting the app.
+- Dark-first Material 3 UI opening directly into a unified sessions feed, with no bottom tabs. Chat and Settings are one action away.
+- Persistent server profiles and remembered server, per-server harness, and feed filter, restored after restarting the app.
 - Required API key authentication, with an optional Pangolin edge-token pair.
-- Harness browser backed by `GET /api/harness/v1/harnesses`.
+- Harness configuration in Settings, backed by `GET /api/harness/v1/harnesses`.
 - Task creation backed by `POST /api/harness/v1/responses` with `stream: true` (SSE), live response text, tool activity, turn status, and token usage when reported by the server.
 - Saved conversation history, including partial turns, and session continuation via the last assistant message's `previous_response_id`.
 - **Stop** cancels the local stream and requests server cancellation with `POST /api/harness/v1/sessions/{encodedSessionId}/cancel` when a session ID is known.
@@ -38,9 +38,9 @@ Local builds remain debug-signed unless a release keystore is configured through
 ### API key and optional Pangolin edge authentication
 
 1. Create an API key in the server's **Settings → Keys**.
-2. Open **Servers → Add server** and enter a display name, server **Base URL**, and **API key (required)**.
+2. On first launch the server editor opens automatically. For additional profiles, open **Settings → Servers → Add server** and enter a display name, server **Base URL**, and **API key (required)**.
 3. If Pangolin protects the server, fill both `P-Access-Token-Id` and `P-Access-Token` in **Pangolin edge authentication (optional)**. Otherwise leave both empty.
-4. Tap **Test connection**, then return to the list and select the server. Each edit is saved immediately; there is no Save button. Connection tests save the result.
+4. Return to the feed. Each edit is saved immediately; there is no Save button. **Test connection** is optional and saves its result, but is never required to open the feed. The last-used server is selected automatically, falling back to the first saved profile.
 
 Every API request requires the API key and sends it as `Authorization: Bearer <apiKey>`. The optional Pangolin pair opens the edge proxy and does not replace the API key. Both edge headers are sent only when both fields are nonempty. Connection tests, harness loading, streamed turns, and cancellation use the same authentication pipeline, without authentication retries.
 
@@ -63,13 +63,13 @@ Older profiles and conversation snapshots still load, but legacy authentication 
 
 ## Usage flow
 
-1. Add and select a server. Use its edit icon to change it or delete it.
-2. Test the connection from the profile editor.
-3. Load harnesses from the **Harnesses** screen.
-4. Tap a harness to open **Tasks**.
-5. Enter a prompt and run the task. Response text and tool activity update live; turn status and available token counts are shown. Use **Stop** to cancel a turn and retain its partial response. Moving the app to the background closes the local stream without cancelling server work. A turn with a known response ID is saved with its partial output as **Server still working…**, then checked when the app resumes.
-6. Enter another prompt and use **Continue** to send the last assistant message's `previous_response_id` against the same local thread. For local-only threads, if that assistant message has no response ID, the next request starts a fresh turn in the same thread; it never reuses an earlier assistant's ID. Linked server sessions instead require the server's latest continuation ID, as described below. **New task**, or choosing a harness, starts a separate thread.
-7. Open **History** to view saved conversations. Tap one to restore it; long-press and confirm to delete it. If its server profile was deleted, the transcript remains readable but continuation shows an error.
+1. Launch into **Sessions** on your last-used server (or the first saved profile). If none exists, the app opens the server editor. Use the Settings gear to add, select, edit, or delete profiles.
+2. Browse **All** server sessions, newest-first, or choose a harness chip. **On-device** shows locally saved conversations without requesting the server session list. The selected filter persists across restarts.
+3. Tap **New chat** to create a local thread and open the composer immediately. It uses the last-used harness for the selected server, falling back to the first available harness, with **Harness default** selected for the model. An unavailable server or empty harness list leaves the feed visible with an inline error and a Settings action.
+4. Enter a prompt and send it. Response text and tool activity update live; turn status and available token counts are shown. Use **Stop** to cancel a turn and retain its partial response. Moving the app to the background closes the local stream without cancelling server work. A turn with a known response ID is saved with its partial output as **Server still working…**, then checked when the app resumes.
+5. Enter another prompt and use **Continue** to send the last assistant message's `previous_response_id` against the same local thread. For local-only threads, if that assistant message has no response ID, the next request starts a fresh turn in the same thread; it never reuses an earlier assistant's ID. Linked server sessions instead require the server's latest continuation ID, as described below. **New task** starts a separate thread using the current harness.
+6. Back returns to the feed; its **Current chat** action reopens the active thread without interrupting a turn. Open **On-device** to restore a saved conversation; long-press and confirm to delete it. If its server profile was deleted, the transcript remains readable but continuation shows an error.
+7. **Settings** is one scrollable page containing **Servers**, **Harnesses**, **Updater**, and **About**. Harness default-model editing and the existing updater are available there.
 
 If the server rejects streaming with a non-200 response or an error before any other SSE event, the app retries once with `stream: false` for legacy servers. Authentication failures are handled first and never trigger this fallback. After an accepted event, it never retries the turn as a non-streaming request. A successful non-SSE JSON response containing a response ID or output is treated as a completed legacy response, not retried. Completed SSE turns finish immediately without waiting for the server to close the connection.
 
@@ -81,13 +81,13 @@ On resume, including a cold restart, the app finds saved unresolved turns and ch
 
 ## Sessions
 
-Select a server, then open **Sessions**. The list shows title, model, status, harness name, and relative time when provided. Pull to refresh or use the refresh action; **Load more** passes the server cursor back unchanged. The harness filter limits the list to one harness. The session list is not polled; refresh manually to observe work completed elsewhere. A saved server-continuing turn does not block browsing other sessions; only a live local turn or an unsaved turn blocks opening another session.
+The launch feed shows title, model, status, harness name, and relative time when provided. **All** requests sessions without a harness filter and displays newest-first; harness chips add a single-harness filter. Pull to refresh or use the refresh action; **Load more** passes the server cursor back unchanged. If loading fails, the feed and filters remain accessible with **Retry** and **Edit server** actions. The session list is not polled; refresh manually to observe work completed elsewhere. A saved server-continuing turn does not block browsing other sessions; only a live local turn or an unsaved turn blocks opening another session.
 
 Opening a session fetches its detail and turns from `/api/harness/v1/sessions/{sid}` and `/api/harness/v1/sessions/{sid}/turns`. Transcript rendering tolerates missing and additional fields. It creates or reuses a local thread linked by server profile, server URL, and session ID. Opening the same session does not create duplicate local history. A linked thread with an unresolved local server-continuing turn keeps its saved transcript until response polling settles that turn, so a session refresh cannot overwrite pending output or status. Otherwise, fresh remote transcript rows are shown alongside unmatched locally saved turn pairs, including partials. Exact text/role matches retain local metadata; without stable server turn IDs, differing partial and final replies are retained separately rather than guessed to be identical. An empty transcript does not erase saved messages.
 
-The linked conversation opens in **Tasks**. Continuation uses the server's `last_response_id` and `harness_id`, not the currently selected task harness. A fresh detail check before sending prevents continuation into a session already marked running or in progress; a missing continuation ID blocks sending rather than silently starting a different session. This check cannot prevent another client starting work immediately afterward; server-side concurrency checks remain authoritative. Completed replies update the linked continuation pointer and are saved through the same atomic thread/index write path as local tasks. Stop, background continuation, partial-output persistence, and storage retries work as for ordinary tasks.
+The linked conversation opens in **Chat**. Continuation uses the server's `last_response_id` and `harness_id`, not the currently selected task harness. A fresh detail check before sending prevents continuation into a session already marked running or in progress; a missing continuation ID blocks sending rather than silently starting a different session. This check cannot prevent another client starting work immediately afterward; server-side concurrency checks remain authoritative. Completed replies update the linked continuation pointer and are saved through the same atomic thread/index write path as local tasks. Stop, background continuation, partial-output persistence, and storage retries work as for ordinary tasks.
 
-Open a linked thread from **History**, then use its server-session action to refresh the server transcript and status. This refresh action is disabled while a locally saved turn is server-continuing; use **Check now** instead. Other running sessions show a live note and disable sending until refreshed. Browsing does not subscribe to another client's live output.
+Open a linked thread from **On-device**, then use its server-session action to refresh the server transcript and status. This refresh action is disabled while a locally saved turn is server-continuing; use **Check now** instead. Other running sessions show a live note and disable sending until refreshed. Browsing does not subscribe to another client's live output.
 
 ## Per-request model override
 
@@ -95,13 +95,15 @@ The composer model chip defaults to **Harness default**: no `model` field is sen
 
 ## Model management
 
-In **Harnesses**, use the model-edit action for a harness. The editor shows its current default and read-only `maxStep` / `timeoutSeconds` when available. Choose a model and save to change its default for subsequent requests that omit a model override.
+In **Settings → Harnesses**, use the model-edit action for a harness. The editor shows its current default and read-only `maxStep` / `timeoutSeconds` when available. Choose a model and save to change its default for subsequent requests that omit a model override.
 
 Saving first fetches the complete harness from `/api/harness/v1/harnesses/{hid}`, changes only `defaultModel`, then PUTs the full object back. Required `name` and immutable `base`, plus MCP servers, skills, plugins, environment, disabled tools, headers, and unknown fields are preserved. The returned `defaultModel` must match the requested value; otherwise the app reports an error. These other fields are not editable here. Read-modify-write has no cross-client conflict protection unless provided by the server; avoid simultaneous configuration edits.
 
 ## Local persistence and security
 
 Server profiles are stored on the device with `shared_preferences` under the key `servers_v1`. Conversations are saved as JSON files in the app's documents directory at `threads/<id>.json`. A lightweight `threads/index.json` lists saved conversations. Full threads are loaded when opened and scanned for unresolved turns when recovery checks run.
+
+Navigation preferences are stored separately under `app_preferences_v1`: the last server ID, last harness ID per server, and feed filter. Missing or malformed preferences use defaults without discarding profiles or conversations. A deleted remembered server falls back to the first saved profile; a missing remembered harness falls back to the first available harness for a new chat.
 
 Completed, cancelled, server-continuing, and failed streamed turns are saved automatically, including partial response text, turn status, errors, response and session IDs, and token usage when available. Older interrupted records are preserved. Local-only threads use the last assistant message's response ID for continuation; a missing ID is not replaced by one from an earlier turn. Linked threads persist `serverSessionId`, `serverHarnessId`, `serverLastResponseId`, and `serverSessionStatus`, and refresh the server pointer before sending. Older saved messages without turn metadata load as completed. Opening a saved conversation restores its server and harness snapshot so it can be continued after restarting the app. Deleting a conversation removes both its thread file and its index entry.
 

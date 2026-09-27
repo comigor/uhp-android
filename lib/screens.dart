@@ -3,126 +3,6 @@ part of 'main.dart';
 void showMessage(WidgetRef ref, Object message) =>
     ref.read(snackbarControllerProvider).show(ref, '$message');
 
-class ServersScreen extends ConsumerWidget {
-  const ServersScreen({super.key});
-
-  @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final profiles = ref.watch(serversProvider);
-    final selectedId = ref.watch(selectedServerProvider.select((s) => s?.id));
-    return Column(
-      children: [
-        Padding(
-          padding: const EdgeInsets.all(16),
-          child: FilledButton.icon(
-            icon: const Icon(Icons.add),
-            label: const Text('Add server'),
-            onPressed: !profiles.hasValue
-                ? null
-                : () async {
-                    final server = ServerConfig(
-                      id: newLocalId(),
-                      name: 'New server',
-                      baseUrl: '',
-                    );
-                    try {
-                      await ref.read(serversProvider.notifier).add(server);
-                      if (!context.mounted) return;
-                      await Navigator.of(context).push<void>(
-                        MaterialPageRoute(
-                          builder: (_) => ServerEditor(server: server),
-                        ),
-                      );
-                    } catch (error) {
-                      if (context.mounted) showMessage(ref, error);
-                    }
-                  },
-          ),
-        ),
-        TextButton(
-          onPressed: !profiles.hasValue
-              ? null
-              : () async {
-                  final server = ServerConfig(
-                    id: newLocalId(),
-                    name: demoServer.name,
-                    baseUrl: demoServer.baseUrl,
-                  );
-                  try {
-                    await ref.read(serversProvider.notifier).add(server);
-                    if (context.mounted) {
-                      await Navigator.of(context).push<void>(
-                        MaterialPageRoute(
-                          builder: (_) => ServerEditor(server: server),
-                        ),
-                      );
-                    }
-                  } catch (error) {
-                    if (context.mounted) showMessage(ref, error);
-                  }
-                },
-          child: const Text('Add demo profile'),
-        ),
-        Expanded(
-          child: profiles.when(
-            loading: () => const Center(child: Text('Loading profiles…')),
-            error: (error, _) =>
-                Center(child: Text('Cannot load profiles: $error')),
-            data: (servers) => servers.isEmpty
-                ? const Center(
-                    child: Text('No saved servers. Add one to begin.'),
-                  )
-                : ListView.builder(
-                    itemCount: servers.length,
-                    itemBuilder: (context, index) {
-                      final server = servers[index];
-                      return ListTile(
-                        leading: Icon(
-                          server.id == selectedId
-                              ? Icons.check_circle
-                              : Icons.dns_outlined,
-                        ),
-                        title: Text(
-                          server.name.isEmpty ? 'Unnamed server' : server.name,
-                        ),
-                        subtitle: Text(
-                          '${server.baseUrl}\n${server.hasApiKey ? server.testResult ?? 'Not tested' : 'API key required'}',
-                        ),
-                        isThreeLine: true,
-                        onTap: () {
-                          if (!server.hasApiKey) {
-                            Navigator.of(context).push<void>(
-                              MaterialPageRoute(
-                                builder: (_) => ServerEditor(server: server),
-                              ),
-                            );
-                            return;
-                          }
-                          ref.read(selectedServerProvider.notifier).state =
-                              server;
-                          ref.read(selectedHarnessProvider.notifier).state =
-                              null;
-                          ref.invalidate(harnessesProvider);
-                        },
-                        trailing: IconButton(
-                          tooltip: 'Edit server',
-                          icon: const Icon(Icons.edit_outlined),
-                          onPressed: () => Navigator.of(context).push<void>(
-                            MaterialPageRoute(
-                              builder: (_) => ServerEditor(server: server),
-                            ),
-                          ),
-                        ),
-                      );
-                    },
-                  ),
-          ),
-        ),
-      ],
-    );
-  }
-}
-
 class ServerEditor extends ConsumerStatefulWidget {
   const ServerEditor({super.key, required this.server});
   final ServerConfig server;
@@ -291,86 +171,6 @@ class _ServerEditorState extends ConsumerState<ServerEditor> {
       ],
     ),
   );
-}
-
-class HarnessesScreen extends ConsumerWidget {
-  const HarnessesScreen({super.key});
-  @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final harnesses = ref.watch(harnessesProvider);
-    final blocked =
-        ref.watch(taskBusyProvider) || ref.watch(unsavedThreadProvider) != null;
-    return Column(
-      children: [
-        Padding(
-          padding: const EdgeInsets.all(16),
-          child: FilledButton(
-            onPressed: harnesses.isLoading
-                ? null
-                : () async {
-                    try {
-                      await ref.read(harnessesProvider.notifier).refresh();
-                    } catch (error) {
-                      if (context.mounted) showMessage(ref, error);
-                    }
-                  },
-            child: const Text('Load harnesses'),
-          ),
-        ),
-        Expanded(
-          child: harnesses.when(
-            loading: () => const Center(child: CircularProgressIndicator()),
-            error: (error, _) => Center(child: Text('$error')),
-            data: (items) => items.isEmpty
-                ? const Center(child: Text('No harnesses loaded.'))
-                : ListView.builder(
-                    itemCount: items.length,
-                    itemBuilder: (context, index) {
-                      final harness = items[index];
-                      return ListTile(
-                        title: Text(harness.name),
-                        subtitle: Text(
-                          '${harness.baseLabel}\n${harness.defaultModel}',
-                        ),
-                        isThreeLine: true,
-                        trailing: IconButton(
-                          tooltip: 'Edit default model',
-                          icon: const Icon(Icons.tune),
-                          onPressed: blocked
-                              ? null
-                              : () {
-                                  final server = ref.read(
-                                    selectedServerProvider,
-                                  );
-                                  if (server == null) return;
-                                  showDialog<void>(
-                                    context: context,
-                                    builder: (_) => _HarnessModelEditor(
-                                      server: server,
-                                      harness: harness,
-                                    ),
-                                  );
-                                },
-                        ),
-                        onTap: blocked
-                            ? null
-                            : () {
-                                ref
-                                        .read(selectedHarnessProvider.notifier)
-                                        .state =
-                                    harness;
-                                ref.read(threadProvider.notifier).state = null;
-                                ref.read(selectedTabProvider.notifier).state =
-                                    AppTab.tasks;
-                              },
-                      );
-                    },
-                  ),
-          ),
-        ),
-      ],
-    );
-  }
 }
 
 class TasksScreen extends ConsumerStatefulWidget {
@@ -775,8 +575,15 @@ class HistoryScreen extends ConsumerWidget {
                               return;
                             }
                             ref.read(threadProvider.notifier).state = thread;
-                            ref.read(selectedTabProvider.notifier).state =
-                                AppTab.tasks;
+                            await ref
+                                .read(appPreferencesProvider.notifier)
+                                .selectHarness(
+                                  thread.server.id,
+                                  thread.harnessId,
+                                );
+                            if (!context.mounted) return;
+                            ref.read(appDestinationProvider.notifier).state =
+                                AppDestination.chat;
                             if (!servers.any((s) => s.id == thread.server.id)) {
                               showMessage(
                                 ref,

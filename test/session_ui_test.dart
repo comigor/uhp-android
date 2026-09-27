@@ -44,9 +44,9 @@ class _SessionSurface extends ConsumerWidget {
   const _SessionSurface();
   @override
   Widget build(BuildContext context, WidgetRef ref) =>
-      ref.watch(selectedTabProvider) == AppTab.tasks
+      ref.watch(appDestinationProvider) == AppDestination.chat
       ? const TasksScreen()
-      : const SessionsScreen();
+      : const SessionsFeed();
 }
 
 void main() {
@@ -339,7 +339,7 @@ void main() {
     await tester.pumpWidget(
       UncontrolledProviderScope(
         container: container,
-        child: const MaterialApp(home: Scaffold(body: SessionsScreen())),
+        child: const MaterialApp(home: Scaffold(body: SessionsFeed())),
       ),
     );
     await tester.pump();

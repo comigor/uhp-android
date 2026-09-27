@@ -126,7 +126,7 @@ class _Fixture {
     await container.read(serversProvider.future);
     container.read(selectedServerProvider.notifier).state = _server;
     container.read(selectedHarnessProvider.notifier).state = _harness;
-    container.read(selectedTabProvider.notifier).state = AppTab.tasks;
+    container.read(appDestinationProvider.notifier).state = AppDestination.chat;
     return _Fixture(
       directory,
       store,
