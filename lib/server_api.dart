@@ -330,6 +330,15 @@ extension ServerApi on UhpService {
           if (output.isNotEmpty) {
             turns.add(SessionTurn(role: 'assistant', text: output));
           }
+        } else if (item.containsKey('user') || item.containsKey('assistant')) {
+          final user = _serverText(item['user']);
+          final assistant = _serverText(item['assistant']);
+          if (user.isNotEmpty) {
+            turns.add(SessionTurn(role: 'user', text: user));
+          }
+          if (assistant.isNotEmpty) {
+            turns.add(SessionTurn(role: 'assistant', text: assistant));
+          }
         } else {
           final text = _serverText(
             item['text'] ?? item['content'] ?? item['message'],

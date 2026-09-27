@@ -1,0 +1,50 @@
+const harnessRouterTurns = {
+  'session_id': 's1',
+  'turns': [
+    {
+      'id': 'resp_1',
+      'status': 'completed',
+      'user': 'First question',
+      'assistant': 'First final reply',
+      'model': 'model-a',
+      'served_model': 'model-a',
+      'tools': [
+        {'name': 'read', 'result': 'Not a transcript message'},
+      ],
+      'files': [
+        {'path': 'notes.txt'},
+      ],
+      'user_files': [],
+      'connection': 'test-connection',
+      'error': null,
+      'incomplete_reason': null,
+      'handoff': null,
+    },
+    {
+      'id': 'resp_2',
+      'status': 'completed',
+      'user': 'Follow-up question',
+      'assistant': 'Second final reply',
+      'tools': [],
+      'files': [],
+      'user_files': [],
+      'error': null,
+    },
+    {
+      'id': 'resp_3',
+      'status': 'failed',
+      'user': 'Unanswered question',
+      'assistant': null,
+      'tools': [],
+      'error': 'Run failed',
+    },
+    {
+      'id': 'resp_4',
+      'status': 'failed',
+      'user': '',
+      'assistant': null,
+      'tools': [],
+      'error': 'Empty run',
+    },
+  ],
+};

@@ -5,6 +5,8 @@ import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 import 'package:uhp_android/main.dart';
 
+import 'fixtures/session_turns.dart';
+
 const _server = ServerConfig(
   id: 'server',
   name: 'Server',
@@ -198,6 +200,93 @@ void main() {
       'https://example.test/api/harness/v1/sessions/session%2Fa%20b%3Fx/turns',
     ]);
   });
+
+  for (final fixture in [
+    (
+      name: 'HarnessRouter user/assistant pairs and null assistants',
+      payload: harnessRouterTurns,
+      expected: [
+        ('user', 'First question'),
+        ('assistant', 'First final reply'),
+        ('user', 'Follow-up question'),
+        ('assistant', 'Second final reply'),
+        ('user', 'Unanswered question'),
+      ],
+    ),
+    (
+      name: 'legacy role/text messages',
+      payload: {
+        'turns': [
+          {'role': 'user', 'text': 'Legacy question'},
+          {'role': 'assistant', 'text': 'Legacy reply'},
+        ],
+      },
+      expected: [('user', 'Legacy question'), ('assistant', 'Legacy reply')],
+    ),
+    (
+      name: 'legacy input/output turns',
+      payload: {
+        'turns': [
+          {'input': 'Legacy question', 'output': 'Legacy reply'},
+          {'input': 'Input only'},
+          {'output': 'Output only'},
+        ],
+      },
+      expected: [
+        ('user', 'Legacy question'),
+        ('assistant', 'Legacy reply'),
+        ('user', 'Input only'),
+        ('assistant', 'Output only'),
+      ],
+    ),
+  ]) {
+    test('session turns parse ${fixture.name}', () async {
+      final client = MockClient((_) async => _json(fixture.payload));
+      addTearDown(client.close);
+      final turns = await UhpService(client).fetchSessionTurns(_server, 's1');
+      expect(turns.map((turn) => (turn.role, turn.text)), fixture.expected);
+    });
+  }
+
+  test(
+    'turn shape precedence and single-sided messages remain intact',
+    () async {
+      final client = MockClient(
+        (_) async => _json({
+          'turns': [
+            {
+              'input': 'Input wins',
+              'output': 'Output wins',
+              'user': 'Ignored',
+              'assistant': 'Ignored',
+            },
+            {
+              'user': 'User wins',
+              'assistant': 'Assistant wins',
+              'role': 'tool',
+              'text': 'Ignored',
+            },
+            {'user': 'User only'},
+            {'assistant': 'Assistant only'},
+            {'role': 'user', 'input': 'Ignored', 'text': 'Role text wins'},
+            'Bare string',
+          ],
+        }),
+      );
+      addTearDown(client.close);
+      final turns = await UhpService(client).fetchSessionTurns(_server, 's1');
+      expect(turns.map((turn) => (turn.role, turn.text)), [
+        ('user', 'Input wins'),
+        ('assistant', 'Output wins'),
+        ('user', 'User wins'),
+        ('assistant', 'Assistant wins'),
+        ('user', 'User only'),
+        ('assistant', 'Assistant only'),
+        ('user', 'Role text wins'),
+        ('unknown', 'Bare string'),
+      ]);
+    },
+  );
 
   test('model catalogues accept lists and data/models envelopes', () async {
     final payloads = <Object>[

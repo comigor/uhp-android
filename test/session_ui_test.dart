@@ -10,6 +10,8 @@ import 'package:http/testing.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:uhp_android/main.dart';
 
+import 'fixtures/session_turns.dart';
+
 const _server = ServerConfig(
   id: 'server',
   name: 'Server',
@@ -226,6 +228,55 @@ void main() {
       expect(index!.single.id, originalId);
     },
   );
+
+  testWidgets('opening HarnessRouter turns renders the session history', (
+    tester,
+  ) async {
+    const session = {
+      'id': 's1',
+      'title': 'HarnessRouter history',
+      'harnessId': 'h1',
+      'status': 'done',
+      'lastResponseId': 'resp_3',
+    };
+    final client = MockClient((request) async {
+      final body = switch (request.url.path) {
+        '/api/harness/v1/harnesses' => {
+          'data': [
+            {'id': 'h1', 'name': 'Research'},
+          ],
+        },
+        '/api/harness/v1/sessions' => {
+          'sessions': [session],
+        },
+        '/api/harness/v1/sessions/s1' => session,
+        '/api/harness/v1/sessions/s1/turns' => harnessRouterTurns,
+        _ => throw StateError('Unexpected ${request.url}'),
+      };
+      return http.Response(jsonEncode(body), 200);
+    });
+    final container = await mount(tester, client, const _SessionSurface());
+    await waitForThreadChange(
+      tester,
+      container,
+      () => tester.tap(find.text('HarnessRouter history')),
+    );
+    expect(find.text('No task history yet.'), findsNothing);
+    for (final message in [
+      'Unanswered question',
+      'Second final reply',
+      'Follow-up question',
+      'First final reply',
+      'First question',
+    ]) {
+      await tester.scrollUntilVisible(
+        find.text(message),
+        100,
+        scrollable: find.byType(Scrollable).first,
+      );
+      expect(find.text(message), findsOneWidget);
+    }
+  });
 
   testWidgets(
     'model picker selects an override and resets for another conversation',
