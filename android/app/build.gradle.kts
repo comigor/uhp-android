@@ -6,6 +6,7 @@ plugins {
 
 val ciKeystorePath = System.getenv("ANDROID_KEYSTORE_PATH")
 val ciKeystorePassword = System.getenv("ANDROID_KEYSTORE_PASSWORD")
+val ciKeystoreType = System.getenv("ANDROID_KEYSTORE_TYPE") ?: "PKCS12"
 val ciKeyAlias = System.getenv("ANDROID_KEY_ALIAS")
 val ciKeyPassword = System.getenv("ANDROID_KEY_PASSWORD")
 val ciKeystoreFile = ciKeystorePath?.let { file(it) }
@@ -38,6 +39,7 @@ android {
         if (useCiSigning) {
             create("ci") {
                 storeFile = ciKeystoreFile
+                storeType = ciKeystoreType
                 storePassword = ciKeystorePassword
                 keyAlias = ciKeyAlias
                 keyPassword = ciKeyPassword
