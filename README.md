@@ -31,7 +31,7 @@ flutter test
 flutter build apk --release
 ```
 
-The release APK is debug-signed in v1 for sideloading. Proper signing through repository secrets is still TODO.
+Local builds remain debug-signed unless a release keystore is configured through the environment. CI can use a persistent release key from GitHub secrets; see **Release signing** below.
 
 ## Server setup
 
@@ -125,15 +125,45 @@ Choose **Download & install** to stream the APK into the app's private temporary
 
 Checks are manual to avoid startup network traffic, polling, background services, and battery use. The app performs no automatic update checks when opened or resumed; resuming only continues an installation you already requested. Version comparison uses the first three numeric components, treating missing or nonnumeric components as zero. CI embeds `APP_VERSION` from the branch/tag name; local builds default to `v0.0.0-dev` unless built with, for example, `--dart-define=APP_VERSION=v0.4.0`.
 
-Android requires the new APK to have the same signing key as the installed app. The existing CI uses debug signing, which may differ between runners/builds; such APKs cannot replace each other in place. Stable release signing is still a roadmap item. Avoid uninstalling merely to work around a signing mismatch unless you accept losing locally stored app data.
+Android requires the new APK to have the same signing key as the installed app. CI uses the persistent release key when signing secrets are configured, otherwise it falls back to debug signing, which may differ between runners/builds. Switching from an older debug-signed installation to a different release key cannot update that installation in place. Avoid uninstalling merely to work around a signing mismatch unless you accept losing locally stored app data.
 
 ## CI
 
 `.github/workflows/android.yml` runs analyze and tests on pull requests, pushes to `main`, and tag pushes matching `v*`. Pushes to `main` also build a release APK artifact. Tag pushes build the APK and attach it to a GitHub Release.
 
+## Release signing
+
+One-time setup, on a trusted machine with a JDK:
+
+1. In a private directory outside this repository, generate a release keystore (or reuse the original signing key if one already exists):
+
+   ```bash
+   keytool -genkeypair -v -keystore uhp-release.jks -storetype JKS -alias uhp-release -keyalg RSA -keysize 2048 -validity 10000
+   base64 < uhp-release.jks | tr -d '\n' > uhp-release.jks.base64
+   ```
+
+   `keytool` prompts for passwords; keep them out of shell history. If the key password is the same as the keystore password, use that value for both password secrets below.
+
+2. In the repository's **Settings → Secrets and variables → Actions**, add all four repository secrets:
+
+   | Secret | Value |
+   | --- | --- |
+   | `KEYSTORE_BASE64` | The complete contents of `uhp-release.jks.base64` |
+   | `KEYSTORE_PASSWORD` | The keystore password |
+   | `KEY_ALIAS` | The signing key alias (`uhp-release` in the example) |
+   | `KEY_PASSWORD` | The signing key password |
+
+3. Keep a secure, durable backup of the original keystore, alias, and passwords. Delete the temporary base64 copy after configuring the secret. Never commit either file or upload it as a workflow artifact; base64 is encoding, not encryption.
+
+Both APK build jobs decode the keystore into `$RUNNER_TEMP/keystore.jks` and export `ANDROID_KEYSTORE_PATH`, `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS`, and `ANDROID_KEY_PASSWORD` through `$GITHUB_ENV`. When `ANDROID_KEYSTORE_PATH` identifies an existing file, Gradle creates and selects the `ci` signing configuration using those values. Supply all four secrets together. Missing or incorrect passwords are not a reason to silently substitute a debug key.
+
+When `KEYSTORE_BASE64` is absent, the preparation step exports nothing and the build retains debug signing. Gradle also selects debug signing when `ANDROID_KEYSTORE_PATH` is unset or does not identify an existing file. Local `flutter run` and `flutter build` behavior is unchanged with these environment variables unset; configuring the same four variables locally enables release-key signing for release builds. Configuration logs report the selected signing mode, never the credentials.
+
+**Rotation warning:** losing the signing key means no more in-place updates for installations signed with that key. Replacing it with a newly generated key also breaks that update path. Keep the original key safe and reuse it across releases; do not regenerate it for each build.
+
 ## Roadmap
 
-- Proper release signing via GitHub secrets.
+- Completed: persistent release signing via GitHub secrets, with debug fallback when absent.
 - Richer response rendering for non-text output blocks.
 
 ## License

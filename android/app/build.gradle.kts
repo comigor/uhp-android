@@ -4,6 +4,18 @@ plugins {
     id("dev.flutter.flutter-gradle-plugin")
 }
 
+val ciKeystorePath = System.getenv("ANDROID_KEYSTORE_PATH")
+val ciKeystorePassword = System.getenv("ANDROID_KEYSTORE_PASSWORD")
+val ciKeyAlias = System.getenv("ANDROID_KEY_ALIAS")
+val ciKeyPassword = System.getenv("ANDROID_KEY_PASSWORD")
+val ciKeystoreFile = ciKeystorePath?.let { file(it) }
+val useCiSigning = ciKeystoreFile?.isFile == true
+
+println(
+    if (useCiSigning) "signing: release keystore from environment"
+    else "signing: keystore absent — falling back to debug signing"
+)
+
 android {
     namespace = "dev.borges.uhp_android"
     compileSdk = flutter.compileSdkVersion
@@ -22,11 +34,20 @@ android {
         versionName = flutter.versionName
     }
 
+    signingConfigs {
+        if (useCiSigning) {
+            create("ci") {
+                storeFile = ciKeystoreFile
+                storePassword = ciKeystorePassword
+                keyAlias = ciKeyAlias
+                keyPassword = ciKeyPassword
+            }
+        }
+    }
+
     buildTypes {
         release {
-            // TODO: Add your own signing config for the release build.
-            // Signing with the debug keys for now, so `flutter run --release` works.
-            signingConfig = signingConfigs.getByName("debug")
+            signingConfig = signingConfigs.getByName(if (useCiSigning) "ci" else "debug")
         }
     }
 }
