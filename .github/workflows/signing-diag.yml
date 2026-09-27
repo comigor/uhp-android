@@ -1,0 +1,52 @@
+name: Signing diagnostics
+
+on:
+  workflow_dispatch:
+
+jobs:
+  diag:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Inspect signing secret metadata
+        shell: bash
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+        run: |
+          umask 077
+          trap 'rm -f "$RUNNER_TEMP/keystore.jks"' EXIT
+          decoded=false
+          echo "KEYSTORE_BASE64 length: ${#KEYSTORE_BASE64} (expected 5848)"
+          if [[ -z "$KEYSTORE_BASE64" ]]; then
+            echo "KEYSTORE_BASE64 empty"
+          elif printf '%s' "$KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/keystore.jks" 2>/dev/null; then
+            decoded=true
+            echo "decoded sha256: $(sha256sum "$RUNNER_TEMP/keystore.jks" | cut -d' ' -f1)"
+            echo "expected    : c6f6b06a7afe5d153b065fedb5e3591ad565fd36292a62718393b55f23234614"
+          else
+            echo "BASE64_DECODE=FAIL"
+          fi
+          echo "KEYSTORE_PASSWORD length: ${#KEYSTORE_PASSWORD} (expected 28)"
+          echo "KEY_PASSWORD length: ${#KEY_PASSWORD} (expected 28)"
+          if [[ "$KEY_ALIAS" == "uhp" ]]; then
+            echo "KEY_ALIAS_MATCHES_EXPECTED=true"
+          else
+            echo "KEY_ALIAS_MATCHES_EXPECTED=false"
+          fi
+          if [[ "$decoded" == true ]]; then
+            if listing=$(keytool -list -storetype PKCS12 -keystore "$RUNNER_TEMP/keystore.jks" -storepass "$KEYSTORE_PASSWORD" 2>/dev/null); then
+              echo "KEYSTORE_OPENS_WITH_KEYSTORE_PASSWORD=true"
+              if [[ -n "$KEY_ALIAS" ]] && printf '%s\n' "$listing" | grep -Fw -- "$KEY_ALIAS" > /dev/null; then
+                echo "ALIAS_FOUND=true"
+              else
+                echo "ALIAS_FOUND=false"
+              fi
+            else
+              echo "KEYSTORE_OPENS_WITH_KEYSTORE_PASSWORD=false"
+              echo "ALIAS_FOUND=false"
+            fi
+          fi
