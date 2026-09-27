@@ -52,7 +52,7 @@ jobs:
       - name: Get packages
         run: flutter pub get
       - name: Build release APK
-        run: flutter build apk --release
+        run: flutter build apk --release --dart-define=APP_VERSION=${{ github.ref_name }}
       - name: Upload release APK artifact
         uses: actions/upload-artifact@v4
         with:
@@ -80,7 +80,7 @@ jobs:
       - name: Get packages
         run: flutter pub get
       - name: Build release APK
-        run: flutter build apk --release
+        run: flutter build apk --release --dart-define=APP_VERSION=${{ github.ref_name }}
       - name: Create GitHub release
         uses: softprops/action-gh-release@v2
         with:

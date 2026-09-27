@@ -117,6 +117,16 @@ Persistence uses preferences and files, not a database. There are no background 
 - Server-session transcripts use tolerant text rendering, not rich server-specific event rendering.
 - No background services, polling timers, wakelocks, or push.
 
+## Updates
+
+Open the top-right overflow menu (**More options**) and choose **Check for updates**. The app checks the latest non-draft, non-prerelease GitHub release without sending server API keys or Pangolin tokens. An equal or newer local version shows **Up to date**; a newer release shows its tag and scrollable plain-text release notes. Network errors, GitHub rate limits, and releases without a downloadable APK are reported in snackbars.
+
+Choose **Download & install** to stream the APK into the app's private temporary cache. The dialog shows download progress; **Cancel** aborts the request and removes the partial APK. On Android 8 and later, Android may first ask you to enable **Allow from this source** for UHP Android. Return to the app after granting consent and it resumes the pending installation attempt. If you decline permission, start the update again when ready. Android's installer still requires your confirmation; the app never installs silently. Completed APKs remain in the cache so the installer can read them and may be reclaimed by Android.
+
+Checks are manual to avoid startup network traffic, polling, background services, and battery use. The app performs no automatic update checks when opened or resumed; resuming only continues an installation you already requested. Version comparison uses the first three numeric components, treating missing or nonnumeric components as zero. CI embeds `APP_VERSION` from the branch/tag name; local builds default to `v0.0.0-dev` unless built with, for example, `--dart-define=APP_VERSION=v0.4.0`.
+
+Android requires the new APK to have the same signing key as the installed app. The existing CI uses debug signing, which may differ between runners/builds; such APKs cannot replace each other in place. Stable release signing is still a roadmap item. Avoid uninstalling merely to work around a signing mismatch unless you accept losing locally stored app data.
+
 ## CI
 
 `.github/workflows/android.yml` runs analyze and tests on pull requests, pushes to `main`, and tag pushes matching `v*`. Pushes to `main` also build a release APK artifact. Tag pushes build the APK and attach it to a GitHub Release.

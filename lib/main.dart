@@ -8,6 +8,9 @@ import 'package:http/http.dart' as http;
 import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'update_ui.dart';
+import 'updater.dart';
+
 part 'server_store.dart';
 part 'thread_store.dart';
 part 'screens.dart';
@@ -153,6 +156,10 @@ class AppError implements Exception {
 
 final uhpServiceProvider = Provider<UhpService>((ref) {
   return UhpService(ref.watch(httpClientProvider));
+});
+
+final updateServiceProvider = Provider<UpdateService>((ref) {
+  return UpdateService(ref.watch(httpClientProvider));
 });
 
 final httpClientProvider = Provider<http.Client>((ref) {
@@ -481,7 +488,10 @@ class _AppShellState extends ConsumerState<AppShell>
     ref.read(serversProvider);
     final tab = ref.watch(selectedTabProvider);
     return Scaffold(
-      appBar: AppBar(title: const Text('UHP Android')),
+      appBar: AppBar(
+        title: const Text('UHP Android'),
+        actions: [UpdateMenu(service: ref.watch(updateServiceProvider))],
+      ),
       body: switch (tab) {
         AppTab.servers => const ServersScreen(),
         AppTab.harnesses => const HarnessesScreen(),
