@@ -162,10 +162,9 @@ class _ServerSessionsState extends ConsumerState<_ServerSessions> {
 
   @override
   Widget build(BuildContext context) {
-    final blocked =
-        ref.watch(taskBusyProvider) ||
-        ref.watch(unsavedThreadProvider) != null ||
-        _opening;
+    final conversationBlocked =
+        ref.watch(taskBusyProvider) || ref.watch(unsavedThreadProvider) != null;
+    final blocked = conversationBlocked || _opening;
     return Column(
       children: [
         Padding(
@@ -216,6 +215,13 @@ class _ServerSessionsState extends ConsumerState<_ServerSessions> {
           ),
         ),
         if (_loading || _opening) const LinearProgressIndicator(),
+        if (conversationBlocked)
+          const Padding(
+            padding: EdgeInsets.symmetric(horizontal: 16),
+            child: Text(
+              'Finish or save the current turn before opening another session.',
+            ),
+          ),
         Expanded(
           child: RefreshIndicator(
             onRefresh: () async {

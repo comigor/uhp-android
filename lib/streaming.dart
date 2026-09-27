@@ -185,11 +185,13 @@ class StreamingTurn {
 
   Future<void> stop(TurnStatus status) async {
     if (_inactive) return;
-    if (status != TurnStatus.cancelled && status != TurnStatus.interrupted) {
+    if (status != TurnStatus.cancelled &&
+        status != TurnStatus.interrupted &&
+        status != TurnStatus.serverContinuing) {
       throw ArgumentError.value(
         status,
         'status',
-        'Expected an interruption status',
+        'Expected a locally stopped stream status',
       );
     }
     _stopped.complete(_record(status));

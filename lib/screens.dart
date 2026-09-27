@@ -392,7 +392,11 @@ class _TasksScreenState extends ConsumerState<TasksScreen> {
   }
 
   Future<void> _refreshSession(ConversationThread thread) async {
-    if (_refreshing || _conversationBlocked(ref)) return;
+    if (_refreshing ||
+        thread.hasServerContinuing ||
+        _conversationBlocked(ref)) {
+      return;
+    }
     setState(() => _refreshing = true);
     bool current() => mounted && identical(ref.read(threadProvider), thread);
     try {
@@ -443,6 +447,7 @@ class _TasksScreenState extends ConsumerState<TasksScreen> {
     if (!mounted ||
         _modelScope != scope ||
         _conversationBlocked(ref) ||
+        (ref.read(threadProvider)?.hasServerContinuing ?? false) ||
         selection == null) {
       return;
     }
@@ -473,7 +478,8 @@ class _TasksScreenState extends ConsumerState<TasksScreen> {
           'running',
           'in_progress',
         }.contains(thread?.serverSessionStatus?.toLowerCase());
-    final blocked = busy || unsaved || running || _refreshing;
+    final continuing = thread?.hasServerContinuing ?? false;
+    final blocked = busy || unsaved || running || continuing || _refreshing;
     final hasLiveTurn = ref.watch(
       liveTurnProvider.select((turn) => turn != null),
     );
@@ -494,7 +500,7 @@ class _TasksScreenState extends ConsumerState<TasksScreen> {
                   Text('Session model: ${thread.model}'),
                 if (thread?.serverSessionId != null) ...[
                   _SessionStatus(status: thread!.serverSessionStatus ?? ''),
-                  if (running)
+                  if (running && !continuing)
                     const Text(
                       'This session is running on the server. Refresh when it finishes to continue.',
                     ),
@@ -503,9 +509,23 @@ class _TasksScreenState extends ConsumerState<TasksScreen> {
                     label: Text(
                       _refreshing ? 'Refreshing…' : 'Refresh server session',
                     ),
-                    onPressed: busy || unsaved || _refreshing
+                    onPressed: busy || unsaved || continuing || _refreshing
                         ? null
                         : () => _refreshSession(thread),
+                  ),
+                ],
+                if (continuing) ...[
+                  const Text('Waiting for previous turn to finish on server'),
+                  TextButton.icon(
+                    icon: const Icon(Icons.refresh),
+                    label: const Text('Check now'),
+                    onPressed: () async {
+                      try {
+                        await ref.read(serverContinuationProvider).checkNow();
+                      } catch (error) {
+                        if (mounted) showMessage(ref, error);
+                      }
+                    },
                   ),
                 ],
                 ActionChip(
@@ -610,7 +630,20 @@ class _TasksScreenState extends ConsumerState<TasksScreen> {
                       ),
                       SelectableText(message.text),
                       if (message.role == 'assistant')
-                        Text(message.status.name),
+                        if (message.status == TurnStatus.serverContinuing)
+                          const Chip(
+                            visualDensity: VisualDensity.compact,
+                            label: Text('Server still working…'),
+                          )
+                        else
+                          Text(message.status.name),
+                      if (message.error != null)
+                        Text(
+                          message.error!,
+                          style: TextStyle(
+                            color: Theme.of(context).colorScheme.error,
+                          ),
+                        ),
                       if (message.responseId != null)
                         Text(
                           'response_id=${message.responseId}',

@@ -117,6 +117,61 @@ Map<String, dynamic> _serverObject(Object? payload, String key) {
   throw const AppError('Unexpected server response shape.');
 }
 
+// Request-scoped cancellation sits below authentication so even a 401 body is
+// released when the caller leaves. The shared transport is never closed.
+class _ResponseFetchClient extends http.BaseClient {
+  _ResponseFetchClient(this._client, this._abort);
+
+  final http.Client _client;
+  final Completer<void> _abort;
+
+  @override
+  Future<http.StreamedResponse> send(http.BaseRequest request) async {
+    if (_abort.isCompleted) throw http.RequestAbortedException(request.url);
+    final response = await _client.send(request);
+    if (_abort.isCompleted) {
+      await response.stream.listen(null).cancel();
+      throw http.RequestAbortedException(request.url);
+    }
+    var finished = false;
+    StreamSubscription<List<int>>? subscription;
+    final body = StreamController<List<int>>(
+      onCancel: () {
+        finished = true;
+        return subscription?.cancel();
+      },
+    );
+    subscription = response.stream.listen(
+      body.add,
+      onError: body.addError,
+      onDone: () {
+        finished = true;
+        unawaited(body.close());
+      },
+    );
+    _abort.future.then((_) {
+      if (finished) return;
+      finished = true;
+      body.addError(http.RequestAbortedException(request.url));
+      unawaited(subscription?.cancel());
+      unawaited(body.close());
+    });
+    return http.StreamedResponse(
+      body.stream,
+      response.statusCode,
+      contentLength: response.contentLength,
+      request: response.request,
+      headers: response.headers,
+      isRedirect: response.isRedirect,
+      persistentConnection: response.persistentConnection,
+      reasonPhrase: response.reasonPhrase,
+    );
+  }
+
+  @override
+  void close() {}
+}
+
 extension ServerApi on UhpService {
   Future<Object?> _serverJson(
     ServerConfig server,
@@ -146,6 +201,50 @@ extension ServerApi on UhpService {
       throw ApiException(response.statusCode, extractErrorBody(response.body));
     }
     return jsonDecode(response.body);
+  }
+
+  Future<Map<String, dynamic>> fetchResponse(
+    ServerConfig server,
+    String responseId, {
+    Future<void>? abortTrigger,
+  }) async {
+    final abort = Completer<void>();
+    if (abortTrigger != null) {
+      abortTrigger.then((_) {
+        if (!abort.isCompleted) abort.complete();
+      });
+    }
+    final uri = buildApiUri(
+      server.baseUrl,
+      '/v1/responses/${Uri.encodeComponent(responseId)}',
+    );
+    final request = http.AbortableRequest(
+      'GET',
+      uri,
+      abortTrigger: abort.future,
+    );
+    try {
+      final response = await Future.any<http.Response>([
+        _ProfileClient(
+          _ResponseFetchClient(_client, abort),
+          server,
+        ).send(request).then(http.Response.fromStream),
+        abort.future.then((_) => throw http.RequestAbortedException(uri)),
+      ]).timeout(UhpService.timeout);
+      if (response.statusCode < 200 || response.statusCode >= 300) {
+        throw ApiException(
+          response.statusCode,
+          extractErrorBody(response.body),
+        );
+      }
+      final record = _serverObject(jsonDecode(response.body), 'response');
+      if (record['id'] != responseId) {
+        throw const AppError('Server returned a different response ID.');
+      }
+      return record;
+    } finally {
+      if (!abort.isCompleted) abort.complete();
+    }
   }
 
   Future<SessionPage> fetchSessions(

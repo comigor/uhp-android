@@ -41,6 +41,11 @@ class TaskRunner {
       return Future.error(const AppError('Enter a prompt first.'));
     }
     final thread = ref.read(threadProvider);
+    if (thread?.hasServerContinuing ?? false) {
+      return Future.error(
+        const AppError('Waiting for previous turn to finish on server.'),
+      );
+    }
     final server = thread?.server ?? ref.read(selectedServerProvider);
     final harness = thread == null
         ? ref.read(selectedHarnessProvider)
@@ -150,6 +155,20 @@ class TaskRunner {
         }
       }
       if (_disposed) return;
+      if (record.status == TurnStatus.serverContinuing &&
+          record.responseId.trim().isEmpty) {
+        record = ResponseRecord(
+          prompt: record.prompt,
+          output: record.output,
+          responseId: '',
+          sessionId: record.sessionId,
+          status: TurnStatus.failed,
+          usage: record.usage,
+          error:
+              'The app backgrounded before the server supplied a response ID. '
+              'Check the server session before retrying; the turn may still be running.',
+        );
+      }
       final updated = thread == null
           ? ConversationThread.start(
               server: server,
@@ -176,7 +195,8 @@ class TaskRunner {
   }
 
   Future<void> cancel() => _stop(TurnStatus.cancelled, remote: true);
-  Future<void> interrupt() => _stop(TurnStatus.interrupted, remote: false);
+  Future<void> background() =>
+      _stop(TurnStatus.serverContinuing, remote: false);
 
   Future<void> _stop(TurnStatus status, {required bool remote}) async {
     final submission = _submission;
@@ -221,6 +241,9 @@ class TaskRunner {
     if (_disposed) return;
     ref.read(unsavedThreadProvider.notifier).state = null;
     ref.invalidate(historyProvider);
+    if (pending.hasServerContinuing) {
+      unawaited(ref.read(serverContinuationProvider).checkNow());
+    }
   }
 
   void dispose() {

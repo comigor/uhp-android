@@ -132,7 +132,7 @@ void main() {
     },
   );
 
-  test('interruption before created persists and next turn omits previous ID in same thread', () async {
+  test('background before created saves a recovery error and next turn omits previous ID', () async {
     final bytes = StreamController<List<int>>();
     final sent = Completer<void>();
     var requests = 0;
@@ -174,20 +174,24 @@ void main() {
     });
     await initialize(client);
     final runner = container.read(taskRunnerProvider);
-    final first = runner.submit('Interrupted question');
+    final first = runner.submit('Backgrounded question');
     await sent.future;
-    await runner.interrupt();
+    await runner.background();
     await first;
     final originalId = container.read(threadProvider)!.id;
     final restored = (await ThreadStore(() async => documents)
         .read(originalId))!;
-    expect(restored.messages.last.status, TurnStatus.interrupted);
+    expect(restored.messages.last.status, TurnStatus.failed);
+    expect(
+      restored.messages.last.error,
+      contains('before the server supplied a response ID'),
+    );
     expect(restored.lastResponseId, isNull);
     container.read(threadProvider.notifier).state = restored;
     await runner.submit('Try again');
     final saved = (await ThreadStore(() async => documents).read(originalId))!;
     expect(saved.messages.map((message) => message.text), [
-      'Interrupted question',
+      'Backgrounded question',
       '',
       'Try again',
       'Fresh answer',

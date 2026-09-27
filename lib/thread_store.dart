@@ -9,6 +9,7 @@ class ThreadMessage {
     this.sessionId,
     this.status = TurnStatus.completed,
     this.usage,
+    this.error,
     required this.createdAt,
   });
 
@@ -18,6 +19,7 @@ class ThreadMessage {
   final String? sessionId;
   final TurnStatus status;
   final TokenUsage? usage;
+  final String? error;
   final DateTime createdAt;
 
   factory ThreadMessage.fromJson(Map<String, dynamic> json) {
@@ -33,6 +35,7 @@ class ThreadMessage {
       usage: json['usage'] == null
           ? null
           : TokenUsage.fromJson(json['usage'] as Map<String, dynamic>),
+      error: json['error'] as String?,
       createdAt: DateTime.parse(json['createdAt'] as String),
     );
   }
@@ -44,6 +47,7 @@ class ThreadMessage {
     'sessionId': sessionId,
     'status': status.name,
     'usage': usage?.toJson(),
+    'error': error,
     'createdAt': createdAt.toUtc().toIso8601String(),
   };
 }
@@ -79,6 +83,12 @@ class ConversationThread {
   final DateTime createdAt;
   final DateTime updatedAt;
   final List<ThreadMessage> messages;
+
+  bool get hasServerContinuing => messages.any(
+    (message) =>
+        message.role == 'assistant' &&
+        message.status == TurnStatus.serverContinuing,
+  );
 
   String? get lastResponseId {
     if (serverSessionId != null) return serverLastResponseId;
@@ -141,6 +151,7 @@ class ConversationThread {
           sessionId: record.sessionId,
           status: record.status,
           usage: record.usage,
+          error: record.error,
           createdAt: now,
         ),
       ],
@@ -182,6 +193,7 @@ class ConversationThread {
           sessionId: record.sessionId,
           status: record.status,
           usage: record.usage,
+          error: record.error,
           createdAt: now,
         ),
       ],
@@ -327,6 +339,112 @@ class ThreadStore {
     return _serialize(() async => _readThread(await _directory(), id));
   }
 
+  Future<List<ConversationThread>> continuingThreads() => _serialize(() async {
+    final directory = await _directory();
+    await _recover(directory);
+    final continuing = <ConversationThread>[];
+    for (final summary in await _loadIndex(directory, strict: true)) {
+      final thread = await _readThread(directory, summary.id, strict: true);
+      if (thread != null && thread.hasServerContinuing) continuing.add(thread);
+    }
+    return continuing;
+  });
+
+  Future<ConversationThread?> settleResponse(
+    String threadId,
+    String responseId,
+    Map<String, dynamic> record,
+  ) {
+    _validateThreadId(threadId);
+    return _serialize(() async {
+      final directory = await _directory();
+      await _recover(directory);
+      final thread = await _readThread(directory, threadId, strict: true);
+      if (thread == null) return null;
+      final index = thread.messages.lastIndexWhere(
+        (message) =>
+            message.role == 'assistant' &&
+            message.status == TurnStatus.serverContinuing &&
+            message.responseId == responseId,
+      );
+      if (index < 0) return null;
+      if (record['id'] != responseId) {
+        throw const AppError('Server returned a different response ID.');
+      }
+      final remoteStatus = _serverString(record['status'])?.toLowerCase();
+      final status = switch (remoteStatus) {
+        'completed' => TurnStatus.completed,
+        'cancelled' => TurnStatus.cancelled,
+        'failed' || 'error' || 'incomplete' => TurnStatus.failed,
+        _ => TurnStatus.serverContinuing,
+      };
+      // Keep the pause timestamp and partial untouched until the server settles.
+      if (status == TurnStatus.serverContinuing) return thread;
+      final previous = thread.messages[index];
+      final rawUsage = record['usage'];
+      final usage = rawUsage is Map
+          ? TokenUsage.fromJson({
+              for (final key in const [
+                'input_tokens',
+                'output_tokens',
+                'total_tokens',
+              ])
+                if (rawUsage[key] is num) key: rawUsage[key],
+            })
+          : previous.usage;
+      String? error;
+      if (status == TurnStatus.failed) {
+        final detail = _serverText(record['error']).trim();
+        final incomplete = record['incomplete_details'];
+        final reason = incomplete is Map
+            ? _serverString(incomplete['reason'])
+            : null;
+        error = detail.isNotEmpty
+            ? detail
+            : remoteStatus == 'incomplete'
+            ? 'Server response was incomplete${reason == null ? '.' : ': $reason'}'
+            : 'Server response failed without an error message.';
+      }
+      final messages = [...thread.messages];
+      messages[index] = ThreadMessage(
+        role: previous.role,
+        text: status == TurnStatus.completed
+            ? extractAssistantText(record)
+            : previous.text,
+        responseId: previous.responseId,
+        sessionId: previous.sessionId,
+        status: status,
+        usage: usage,
+        error: error,
+        createdAt: previous.createdAt,
+      );
+      // A late result can settle its own row, never a newer turn or its pointer.
+      final updateSession =
+          thread.serverSessionId != null && index == messages.length - 1;
+      final settled = ConversationThread(
+        id: thread.id,
+        title: thread.title,
+        server: thread.server,
+        harnessId: thread.harnessId,
+        harnessName: thread.harnessName,
+        model: thread.model,
+        serverSessionId: thread.serverSessionId,
+        serverHarnessId: thread.serverHarnessId,
+        serverLastResponseId: updateSession && status == TurnStatus.completed
+            ? responseId
+            : thread.serverLastResponseId,
+        serverSessionStatus: updateSession
+            ? status.name
+            : thread.serverSessionStatus,
+        createdAt: thread.createdAt,
+        updatedAt: DateTime.now().toUtc(),
+        messages: messages,
+      );
+      await _save(directory, settled);
+      return settled;
+    });
+  }
+
   Future<ConversationThread> linkServerSession({
     required ServerConfig server,
     required ServerSession session,
@@ -347,6 +465,9 @@ class ThreadStore {
         break;
       }
     }
+    // Polling owns reconciliation while a local response is unresolved. A
+    // transcript refresh cannot identify its final row reliably yet.
+    if (existing != null && existing.hasServerContinuing) return existing;
     final now = DateTime.now().toUtc();
     final imported = turns
         .map(

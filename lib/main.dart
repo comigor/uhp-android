@@ -16,6 +16,7 @@ part 'thread_store.dart';
 part 'screens.dart';
 part 'streaming.dart';
 part 'turn_runner.dart';
+part 'server_continuation.dart';
 part 'auth_client.dart';
 part 'server_api.dart';
 part 'session_screens.dart';
@@ -27,7 +28,14 @@ void main() {
 
 enum AppTab { servers, harnesses, tasks, history, sessions }
 
-enum TurnStatus { running, completed, cancelled, interrupted, failed }
+enum TurnStatus {
+  running,
+  serverContinuing,
+  completed,
+  cancelled,
+  interrupted,
+  failed,
+}
 
 const demoServer = ServerConfig(
   name: 'HarnessRouter demo',
@@ -134,6 +142,7 @@ class ResponseRecord {
     required this.sessionId,
     this.status = TurnStatus.completed,
     this.usage,
+    this.error,
   });
 
   final String prompt;
@@ -142,6 +151,7 @@ class ResponseRecord {
   final String sessionId;
   final TurnStatus status;
   final TokenUsage? usage;
+  final String? error;
 }
 
 @immutable
@@ -454,26 +464,40 @@ class AppShell extends ConsumerStatefulWidget {
 
 class _AppShellState extends ConsumerState<AppShell>
     with WidgetsBindingObserver {
+  late final ServerContinuationController _continuation;
+
   @override
   void initState() {
     super.initState();
+    _continuation = ref.read(serverContinuationProvider);
     WidgetsBinding.instance.addObserver(this);
+    final state = WidgetsBinding.instance.lifecycleState;
+    if (state == null || state == AppLifecycleState.resumed) {
+      unawaited(_continuation.resume());
+    }
   }
 
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    _continuation.pause();
     super.dispose();
   }
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
+    final continuation = _continuation;
+    if (state == AppLifecycleState.resumed) {
+      unawaited(continuation.resume());
+    } else {
+      continuation.pause();
+    }
     if (state == AppLifecycleState.hidden ||
         state == AppLifecycleState.paused ||
         state == AppLifecycleState.detached) {
       final messenger = ref.read(appScaffoldMessengerKeyProvider);
       unawaited(
-        ref.read(taskRunnerProvider).interrupt().catchError((Object error) {
+        ref.read(taskRunnerProvider).background().catchError((Object error) {
           messenger.currentState?.showSnackBar(
             SnackBar(content: Text('$error')),
           );
