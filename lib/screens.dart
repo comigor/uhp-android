@@ -369,223 +369,216 @@ class _TasksScreenState extends ConsumerState<TasksScreen> {
       liveTurnProvider.select((turn) => turn != null),
     );
     final messages = thread?.messages ?? const <ThreadMessage>[];
-    return CustomScrollView(
-      slivers: [
-        SliverToBoxAdapter(
-          child: Padding(
-            padding: const EdgeInsets.all(16),
-            child: Column(
+    return _ChatSearchView(
+      threadId: thread?.id,
+      messages: messages,
+      hasLiveTurn: hasLiveTurn,
+      composer: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          children: [
+            Text(
+              thread == null
+                  ? 'Harness: ${harness?.name ?? 'none'}'
+                  : '${thread.title} · ${thread.harnessName}',
+            ),
+            if (thread?.model != null && thread!.model!.isNotEmpty)
+              Text('Session model: ${thread.model}'),
+            if (thread?.serverSessionId != null) ...[
+              _SessionStatus(status: thread!.serverSessionStatus ?? ''),
+              if (running && !continuing)
+                const Text(
+                  'This session is running on the server. Refresh when it finishes to continue.',
+                ),
+              TextButton.icon(
+                icon: const Icon(Icons.refresh),
+                label: Text(
+                  _refreshing ? 'Refreshing…' : 'Refresh server session',
+                ),
+                onPressed: busy || unsaved || continuing || _refreshing
+                    ? null
+                    : () => _refreshSession(thread),
+              ),
+            ],
+            if (continuing) ...[
+              const Text('Waiting for previous turn to finish on server'),
+              TextButton.icon(
+                icon: const Icon(Icons.refresh),
+                label: const Text('Check now'),
+                onPressed: () async {
+                  try {
+                    await ref.read(serverContinuationProvider).checkNow();
+                  } catch (error) {
+                    if (mounted) showMessage(ref, error);
+                  }
+                },
+              ),
+            ],
+            Row(
               children: [
-                Text(
-                  thread == null
-                      ? 'Harness: ${harness?.name ?? 'none'}'
-                      : '${thread.title} · ${thread.harnessName}',
-                ),
-                if (thread?.model != null && thread!.model!.isNotEmpty)
-                  Text('Session model: ${thread.model}'),
-                if (thread?.serverSessionId != null) ...[
-                  _SessionStatus(status: thread!.serverSessionStatus ?? ''),
-                  if (running && !continuing)
-                    const Text(
-                      'This session is running on the server. Refresh when it finishes to continue.',
-                    ),
-                  TextButton.icon(
-                    icon: const Icon(Icons.refresh),
-                    label: Text(
-                      _refreshing ? 'Refreshing…' : 'Refresh server session',
-                    ),
-                    onPressed: busy || unsaved || continuing || _refreshing
-                        ? null
-                        : () => _refreshSession(thread),
-                  ),
-                ],
-                if (continuing) ...[
-                  const Text('Waiting for previous turn to finish on server'),
-                  TextButton.icon(
-                    icon: const Icon(Icons.refresh),
-                    label: const Text('Check now'),
-                    onPressed: () async {
-                      try {
-                        await ref.read(serverContinuationProvider).checkNow();
-                      } catch (error) {
-                        if (mounted) showMessage(ref, error);
-                      }
-                    },
-                  ),
-                ],
-                Row(
-                  children: [
-                    IconButton(
-                      tooltip: thread?.serverSessionId == null
-                          ? 'attachments need a server session'
-                          : 'Attach files',
-                      icon: const Icon(Icons.attach_file),
-                      onPressed: blocked || thread?.serverSessionId == null
-                          ? null
-                          : _pickAttachments,
-                    ),
-                    if (_pickingAttachments)
-                      const Flexible(
-                        child: Text(
-                          'Picking attachments…',
-                          overflow: TextOverflow.ellipsis,
-                        ),
-                      ),
-                    if (thread?.serverSessionId != null) ...[
-                      TextButton.icon(
-                        onPressed: () => showSessionFiles(ref, thread!),
-                        icon: const Icon(Icons.folder_open),
-                        label: const Text('Files'),
-                      ),
-                      const Spacer(),
-                      SessionActionsMenu(thread: thread!),
-                    ],
-                  ],
-                ),
-                if (_attachments.isNotEmpty)
-                  Wrap(
-                    spacing: 6,
-                    children: [
-                      for (final attachment in _attachments)
-                        InputChip(
-                          label: Text(attachment.name),
-                          tooltip: '${attachment.size} bytes',
-                          avatar: const Icon(Icons.attach_file),
-                          onDeleted: blocked
-                              ? null
-                              : () {
-                                  setState(
-                                    () => _attachments.remove(attachment),
-                                  );
-                                  unawaited(_discardAttachments([attachment]));
-                                },
-                        ),
-                    ],
-                  ),
-                ActionChip(
-                  avatar: const Icon(Icons.tune),
-                  label: Text('Model: ${_model ?? 'Harness default'}'),
-                  onPressed: blocked || server == null || harnessId == null
+                IconButton(
+                  tooltip: thread?.serverSessionId == null
+                      ? 'attachments need a server session'
+                      : 'Attach files',
+                  icon: const Icon(Icons.attach_file),
+                  onPressed: blocked || thread?.serverSessionId == null
                       ? null
-                      : () => _chooseModel(server, harnessId, scope),
+                      : _pickAttachments,
                 ),
-                TextField(
-                  controller: _prompt,
-                  minLines: 1,
-                  maxLines: 3,
-                  decoration: const InputDecoration(labelText: 'Prompt'),
-                  enabled: !blocked,
-                ),
-                Wrap(
-                  spacing: 12,
-                  children: [
-                    FilledButton(
-                      onPressed: blocked ? null : _submit,
-                      child: Text(
-                        busy
-                            ? 'Working…'
-                            : thread == null
-                            ? 'Run task'
-                            : 'Continue',
-                      ),
+                if (_pickingAttachments)
+                  const Flexible(
+                    child: Text(
+                      'Picking attachments…',
+                      overflow: TextOverflow.ellipsis,
                     ),
-                    if (busy) const StopTurnButton(),
-                    TextButton(
-                      onPressed: busy || unsaved || _refreshing
-                          ? null
-                          : () {
-                              ref.read(threadProvider.notifier).state = null;
-                              setState(() => _model = null);
-                            },
-                      child: const Text('New task'),
-                    ),
-                  ],
-                ),
-                if (unsaved) ...[
-                  const Text(
-                    'Completed turn not yet saved. Retry before leaving this conversation.',
                   ),
-                  TextButton(
-                    onPressed: busy
-                        ? null
-                        : () async {
-                            try {
-                              await ref.read(taskRunnerProvider).savePending();
-                            } catch (error) {
-                              if (mounted) showMessage(ref, error);
-                            }
-                          },
-                    child: const Text('Retry storage write'),
+                if (thread?.serverSessionId != null) ...[
+                  TextButton.icon(
+                    onPressed: () => showSessionFiles(ref, thread!),
+                    icon: const Icon(Icons.folder_open),
+                    label: const Text('Files'),
                   ),
+                  const Spacer(),
+                  SessionActionsMenu(thread: thread!),
                 ],
               ],
             ),
-          ),
-        ),
-        if (messages.isEmpty && !hasLiveTurn)
-          const SliverFillRemaining(
-            hasScrollBody: false,
-            child: Center(child: Text('No task history yet.')),
-          )
-        else
-          SliverList.builder(
-            itemCount: messages.length + (hasLiveTurn ? 1 : 0),
-            itemBuilder: (context, index) {
-              if (hasLiveTurn && index == 0) return const ActiveTurnCard();
-              final message =
-                  messages[messages.length - 1 - index + (hasLiveTurn ? 1 : 0)];
-              return Card(
-                child: Padding(
-                  padding: const EdgeInsets.all(12),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        message.role,
-                        style: Theme.of(context).textTheme.labelLarge,
-                      ),
-                      MessageContent(role: message.role, text: message.text),
-                      if (message.attachments.isNotEmpty)
-                        AttachmentChips(attachments: message.attachments),
-                      if (thread?.serverSessionId != null &&
-                          message.role == 'assistant' &&
-                          (message.status == TurnStatus.failed ||
-                              message.status == TurnStatus.cancelled))
-                        TextButton.icon(
-                          onPressed: () =>
-                              showSessionFiles(ref, thread!, changed: true),
-                          icon: const Icon(Icons.folder_open),
-                          label: const Text('View files'),
-                        ),
-                      if (message.role == 'assistant')
-                        if (message.status == TurnStatus.serverContinuing)
-                          const Chip(
-                            visualDensity: VisualDensity.compact,
-                            label: Text('Server still working…'),
-                          )
-                        else
-                          Text(message.status.name),
-                      if (message.error != null)
-                        Text(
-                          message.error!,
-                          style: TextStyle(
-                            color: Theme.of(context).colorScheme.error,
-                          ),
-                        ),
-                      if (message.responseId != null)
-                        Text(
-                          'response_id=${message.responseId}',
-                          style: Theme.of(context).textTheme.bodySmall,
-                        ),
-                      if (message.usage != null)
-                        UsageText(usage: message.usage!),
-                    ],
+            if (_attachments.isNotEmpty)
+              Wrap(
+                spacing: 6,
+                children: [
+                  for (final attachment in _attachments)
+                    InputChip(
+                      label: Text(attachment.name),
+                      tooltip: '${attachment.size} bytes',
+                      avatar: const Icon(Icons.attach_file),
+                      onDeleted: blocked
+                          ? null
+                          : () {
+                              setState(() => _attachments.remove(attachment));
+                              unawaited(_discardAttachments([attachment]));
+                            },
+                    ),
+                ],
+              ),
+            ActionChip(
+              avatar: const Icon(Icons.tune),
+              label: Text('Model: ${_model ?? 'Harness default'}'),
+              onPressed: blocked || server == null || harnessId == null
+                  ? null
+                  : () => _chooseModel(server, harnessId, scope),
+            ),
+            TextField(
+              controller: _prompt,
+              minLines: 1,
+              maxLines: 3,
+              decoration: const InputDecoration(labelText: 'Prompt'),
+              enabled: !blocked,
+            ),
+            Wrap(
+              spacing: 12,
+              children: [
+                FilledButton(
+                  onPressed: blocked ? null : _submit,
+                  child: Text(
+                    busy
+                        ? 'Working…'
+                        : thread == null
+                        ? 'Run task'
+                        : 'Continue',
                   ),
                 ),
-              );
-            },
+                if (busy) const StopTurnButton(),
+                TextButton(
+                  onPressed: busy || unsaved || _refreshing
+                      ? null
+                      : () {
+                          ref.read(threadProvider.notifier).state = null;
+                          setState(() => _model = null);
+                        },
+                  child: const Text('New task'),
+                ),
+              ],
+            ),
+            if (unsaved) ...[
+              const Text(
+                'Completed turn not yet saved. Retry before leaving this conversation.',
+              ),
+              TextButton(
+                onPressed: busy
+                    ? null
+                    : () async {
+                        try {
+                          await ref.read(taskRunnerProvider).savePending();
+                        } catch (error) {
+                          if (mounted) showMessage(ref, error);
+                        }
+                      },
+                child: const Text('Retry storage write'),
+              ),
+            ],
+          ],
+        ),
+      ),
+      messageBuilder: (context, messageIndex, highlights) {
+        final message = messages[messageIndex];
+        return Card(
+          child: Padding(
+            padding: const EdgeInsets.all(12),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  message.role,
+                  style: Theme.of(context).textTheme.labelLarge,
+                ),
+                if (highlights == null)
+                  MessageContent(role: message.role, text: message.text)
+                else
+                  _ChatSearchText(text: message.text, highlights: highlights),
+                if (message.role == 'assistant' && message.tools.isNotEmpty)
+                  ToolTimeline(
+                    key: ValueKey((thread?.id, messageIndex)),
+                    tools: message.tools,
+                  ),
+                if (message.attachments.isNotEmpty)
+                  AttachmentChips(attachments: message.attachments),
+                if (thread?.serverSessionId != null &&
+                    message.role == 'assistant' &&
+                    (message.status == TurnStatus.failed ||
+                        message.status == TurnStatus.cancelled))
+                  TextButton.icon(
+                    onPressed: () =>
+                        showSessionFiles(ref, thread!, changed: true),
+                    icon: const Icon(Icons.folder_open),
+                    label: const Text('View files'),
+                  ),
+                if (message.role == 'assistant')
+                  if (message.status == TurnStatus.serverContinuing)
+                    const Chip(
+                      visualDensity: VisualDensity.compact,
+                      label: Text('Server still working…'),
+                    )
+                  else
+                    Text(message.status.name),
+                if (message.error != null)
+                  Text(
+                    message.error!,
+                    style: TextStyle(
+                      color: Theme.of(context).colorScheme.error,
+                    ),
+                  ),
+                if (message.responseId != null)
+                  Text(
+                    'response_id=${message.responseId}',
+                    style: Theme.of(context).textTheme.bodySmall,
+                  ),
+                if (message.usage != null) UsageText(usage: message.usage!),
+              ],
+            ),
           ),
-      ],
+        );
+      },
     );
   }
 }

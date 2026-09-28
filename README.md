@@ -14,6 +14,8 @@ Android-only Flutter client for Unified Harness Protocol servers.
 - Device-local conversation rename, archive/unarchive, and deletion, plus per-server session hiding with restoration in Settings.
 - **Stop** cancels the local stream and requests server cancellation with `POST /api/harness/v1/sessions/{encodedSessionId}/cancel` when a session ID is known.
 - Server-scoped session browsing, transcript import, and continuation linked to persistent local history.
+- Collapsed per-turn tool timelines with selectable arguments, retained in saved transcripts.
+- Client-side feed search and loaded-chat search with occurrence highlights and previous/next navigation.
 - Per-request model overrides and faithful read-modify-write updates to harness default models.
 - Session workspace browsing, changed-file diagnostics, streamed downloads and ZIP exports with native Android open/share actions.
 - Native multi-file attachments (25 MiB per file), authenticated uploads, and durable transcript attachment chips.
@@ -94,6 +96,26 @@ The linked conversation opens in **Chat**. Continuation uses the server's `last_
 
 Open a linked thread from **On-device**, then use its server-session action to refresh the server transcript and status. This refresh action is disabled while a locally saved turn is server-continuing; use **Check now** instead. Other running sessions show a live note and disable sending until refreshed. Browsing does not subscribe to another client's live output.
 
+## v0.8.0: tool timeline and search
+
+### Tool timeline
+
+Fetched assistant turns with tools show a collapsed **Tools (N)** chip. Expand it to see calls in server order, each with its name and a compact argument summary. Full arguments are selectable monospace text: valid JSON is pretty-printed, while invalid JSON remains literal. Arguments are decoded and their widgets built only after expansion. Each turn expands independently, including when navigating search matches.
+
+Tool names and exact argument strings from the turns endpoint are saved with the local transcript and survive reopen, refresh, and continuation. Older transcripts and turns without tools remain readable and show no chip. Only tool arguments are displayed; the client does not invent results or execute tool content. Tool arguments may contain sensitive data and have the same plaintext local-storage exposure as the conversation. Live SSE activity is unchanged; fetched transcript tools provide the stored timeline.
+
+### Feed search
+
+Tap **Search sessions** in the feed app bar. A case-insensitive substring query matches session titles or the first line of the first user message, combined with **All**, the chosen harness, or **On-device**. Typing is debounced by 250 ms; clearing restores the current unsearched list immediately. **X**, Escape, or Android Back closes and clears search. Changing server or leaving the feed also clears it.
+
+Search uses only already-loaded session cards or local summaries: it never fetches transcripts or pages to find matches. Server cards use `user_prompt`; a card without it remains searchable by title. **Load more** remains explicit. With a nonempty query, **Select all filtered** selects only matching loaded rows, respecting hidden/archived/running restrictions. Local summaries retain a first-user-line preview; old indexes are backfilled once from their local thread files, preserving unavailable rows and unrelated metadata.
+
+### Chat search
+
+Choose **Chat options → Search in chat** for either a linked server chat or an On-device thread. The pinned search bar searches loaded saved message text, literally and case-insensitively, and shows the current occurrence and total. Up/down arrows navigate with wraparound in newest-first display order; Enter advances. Each occurrence is highlighted and the active occurrence has a distinct color. Indexed lazy slivers jump directly to distant variable-height messages without constructing the intervening history.
+
+While a query is nonempty, saved messages use selectable plain-text highlights rather than Markdown. **X** or Escape clears matches and restores normal rendering. Changing thread or leaving Chat closes search; queries are not persisted. Search never requests older server turns and does not search live stream activity, tool arguments, or attachment contents. No dependencies, background workers, or polling were added for these features.
+
 ## Session files and attachments
 
 In a linked server chat, **Files** opens the workspace browser. **New this turn** requests `GET /api/harness/v1/sessions/{sid}/files?changed=true`; turn cards also offer **View files**, including failed and cancelled turns, so diagnostic artifacts remain accessible. Pull to refresh the list. A server response explicitly saying the session has no workspace is shown as an empty state; other failures remain errors.
@@ -128,7 +150,7 @@ In **On-device**, tap a conversation's overflow menu:
 
 On a server-session row, **Hide from feed** removes it only from that server profile's feed on this device. Hidden session IDs and display titles persist separately from thread files. They do not delete or archive an imported On-device copy, and do not alter pagination cursors. Restore individual entries under **Settings → Servers → Hidden sessions** for the corresponding profile. These actions never send server rename, archive, hide, or delete requests.
 
-Long-press a feed row to enter multi-selection. The top bar shows the selected count; taps toggle checkboxes, and **X** or Android Back exits selection without leaving the feed. **Select all filtered** adds eligible rows from the current filter (including remaining server pages, excluding hidden sessions and archived local rows unless **Show archived** is enabled). Selections survive filter switches, allowing mixed batches, but clear when changing server or leaving the feed. **Archive (N)** and **Delete (N)** apply only to selected On-device conversations; **Hide (N)** applies only to selected server sessions. Each count reflects that action's applicable rows. Delete confirms once for the batch; archive and hide do not confirm. Successful operations clear selection and show a summary. **Undo** restores the entire successful archive/hide batch without reverting unrelated titles, messages, or preferences; delete has no Undo. Storage errors report partial successes and preserve Undo for reversible changes that committed.
+Long-press a feed row to enter multi-selection. The top bar shows the selected count; taps toggle checkboxes, and **X** or Android Back exits selection without leaving the feed. **Select all filtered** adds eligible rows from the current filter (including remaining server pages only when no text query is active, excluding hidden sessions and archived local rows unless **Show archived** is enabled). With a text query, only matching loaded rows are added. Selections survive filter switches, allowing mixed batches, but clear when changing server or leaving the feed. **Archive (N)** and **Delete (N)** apply only to selected On-device conversations; **Hide (N)** applies only to selected server sessions. Each count reflects that action's applicable rows. Delete confirms once for the batch; archive and hide do not confirm. Successful operations clear selection and show a summary. **Undo** restores the entire successful archive/hide batch without reverting unrelated titles, messages, or preferences; delete has no Undo. Storage errors report partial successes and preserve Undo for reversible changes that committed.
 
 Swipe right on an active On-device row to archive, or left on an archived row to unarchive. Swipe right on a server-session row to hide it locally. Each gesture has a snackbar **Undo** and no confirmation. Swipes are disabled during selection and while busy/unsaved guards apply; vertical scrolling and pull-to-refresh remain available. Running rows cannot be selected or swiped, but can still be opened to inspect their progress.
 
@@ -146,7 +168,7 @@ Saving first fetches the complete harness from `/api/harness/v1/harnesses/{hid}`
 
 ## Local persistence and security
 
-Server profiles are stored on the device with `shared_preferences` under the key `servers_v1`. Conversations are saved as JSON files in the app's documents directory at `threads/<id>.json`. A lightweight `threads/index.json` lists saved conversations. Full threads are loaded when opened and scanned for unresolved turns when recovery checks run.
+Server profiles are stored on the device with `shared_preferences` under the key `servers_v1`. Conversations are saved as JSON files in the app's documents directory at `threads/<id>.json`. A lightweight `threads/index.json` lists saved conversations and their first-user-line search previews. Full threads are loaded when opened, scanned for unresolved turns when recovery checks run, and read once to backfill previews for older index entries.
 
 Navigation preferences are stored separately under `app_preferences_v1`: the last server ID, last harness ID per server, feed filter, and hidden-session IDs/titles grouped by server profile. Missing or malformed preferences use defaults without discarding profiles or conversations. A deleted remembered server falls back to the first saved profile; a missing remembered harness highlights the first available harness in the new-chat chooser. Multi-selection and Undo are transient; completed management changes persist.
 
@@ -170,11 +192,11 @@ Persistence uses preferences and files, not a database. There are no background 
 
 ## Updates
 
-Open the top-right overflow menu (**More options**) and choose **Check for updates**. The app checks the latest non-draft, non-prerelease GitHub release without sending server API keys or Pangolin tokens. An equal or newer local version shows **Up to date**; a newer release shows its tag and scrollable plain-text release notes. Network errors, GitHub rate limits, and releases without a downloadable APK are reported in snackbars.
+Open **Settings → Updater**, then choose **Check for updates** from its menu. The app checks the latest non-draft, non-prerelease GitHub release without sending server API keys or Pangolin tokens. An equal or newer local version shows **Up to date**; a newer release shows its tag and scrollable plain-text release notes. Network errors, GitHub rate limits, and releases without a downloadable APK are reported in snackbars.
 
 Choose **Download & install** to stream the APK into the app's private temporary cache. The dialog shows download progress; **Cancel** aborts the request and removes the partial APK. On Android 8 and later, Android may first ask you to enable **Allow from this source** for UHP Android. Return to the app after granting consent and it resumes the pending installation attempt. If you decline permission, start the update again when ready. Android's installer still requires your confirmation; the app never installs silently. Completed APKs remain in the cache so the installer can read them and may be reclaimed by Android.
 
-Checks are manual to avoid startup network traffic, polling, background services, and battery use. The app performs no automatic update checks when opened or resumed; resuming only continues an installation you already requested. Version comparison uses the first three numeric components, treating missing or nonnumeric components as zero. CI embeds `APP_VERSION` from the branch/tag name; local builds default to `v0.0.0-dev` unless built with, for example, `--dart-define=APP_VERSION=v0.4.0`.
+Checks are manual to avoid startup network traffic, polling, background services, and battery use. The app performs no automatic update checks when opened or resumed; resuming only continues an installation you already requested. Version comparison uses the first three numeric components, treating missing or nonnumeric components as zero. CI embeds `APP_VERSION` from the branch/tag name; local builds default to `v0.0.0-dev` unless built with, for example, `--dart-define=APP_VERSION=v0.8.0`.
 
 Android requires the new APK to have the same signing key as the installed app. CI uses the persistent release key when signing secrets are configured, otherwise it falls back to debug signing, which may differ between runners/builds. Switching from an older debug-signed installation to a different release key cannot update that installation in place. Avoid uninstalling merely to work around a signing mismatch unless you accept losing locally stored app data.
 

@@ -5,6 +5,7 @@ class ServerSession {
   const ServerSession({
     required this.id,
     this.title = '',
+    this.firstUserLine = '',
     this.model = '',
     this.harnessId = '',
     this.status = '',
@@ -14,6 +15,7 @@ class ServerSession {
 
   final String id;
   final String title;
+  final String firstUserLine;
   final String model;
   final String harnessId;
   final String status;
@@ -32,6 +34,7 @@ class ServerSession {
           ) ??
           '',
       title: _serverString(json['title'] ?? json['name']) ?? '',
+      firstUserLine: _firstTextLine(_serverString(json['user_prompt']) ?? ''),
       model: _serverString(json['model']) ?? '',
       harnessId:
           _serverString(
@@ -68,11 +71,40 @@ class SessionPage {
 }
 
 @immutable
+class ToolCall {
+  const ToolCall({required this.name, required this.args});
+
+  final String name;
+  final String args;
+
+  Map<String, dynamic> toJson() => {'name': name, 'arguments': args};
+}
+
+List<ToolCall> _parseToolCalls(Object? value) {
+  if (value is! List) return const [];
+  return List.unmodifiable([
+    for (final row in value)
+      if (row is Map && row['name'] is String && row['arguments'] is String)
+        ToolCall(name: row['name'] as String, args: row['arguments'] as String),
+  ]);
+}
+
+String _firstTextLine(String text) {
+  final end = text.indexOf(RegExp(r'[\r\n]'));
+  return (end < 0 ? text : text.substring(0, end)).trim();
+}
+
+@immutable
 class SessionTurn {
-  const SessionTurn({required this.role, required this.text});
+  const SessionTurn({
+    required this.role,
+    required this.text,
+    this.tools = const [],
+  });
 
   final String role;
   final String text;
+  final List<ToolCall> tools;
 }
 
 String? _serverString(Object? value) => value is String ? value : null;
@@ -320,6 +352,7 @@ extension ServerApi on UhpService {
         turns.add(SessionTurn(role: 'unknown', text: item));
       } else if (item is Map) {
         final role = _serverString(item['role']);
+        final tools = _parseToolCalls(item['tools']);
         if (role == null &&
             (item.containsKey('input') || item.containsKey('output'))) {
           final input = _serverText(item['input']);
@@ -327,8 +360,10 @@ extension ServerApi on UhpService {
           if (input.isNotEmpty) {
             turns.add(SessionTurn(role: 'user', text: input));
           }
-          if (output.isNotEmpty) {
-            turns.add(SessionTurn(role: 'assistant', text: output));
+          if (output.isNotEmpty || tools.isNotEmpty) {
+            turns.add(
+              SessionTurn(role: 'assistant', text: output, tools: tools),
+            );
           }
         } else if (item.containsKey('user') || item.containsKey('assistant')) {
           final user = _serverText(item['user']);
@@ -336,15 +371,23 @@ extension ServerApi on UhpService {
           if (user.isNotEmpty) {
             turns.add(SessionTurn(role: 'user', text: user));
           }
-          if (assistant.isNotEmpty) {
-            turns.add(SessionTurn(role: 'assistant', text: assistant));
+          if (assistant.isNotEmpty || tools.isNotEmpty) {
+            turns.add(
+              SessionTurn(role: 'assistant', text: assistant, tools: tools),
+            );
           }
         } else {
           final text = _serverText(
             item['text'] ?? item['content'] ?? item['message'],
           );
-          if (text.isNotEmpty) {
-            turns.add(SessionTurn(role: role ?? 'unknown', text: text));
+          if (text.isNotEmpty || tools.isNotEmpty) {
+            turns.add(
+              SessionTurn(
+                role: role ?? (tools.isNotEmpty ? 'assistant' : 'unknown'),
+                text: text,
+                tools: tools,
+              ),
+            );
           }
         }
       }

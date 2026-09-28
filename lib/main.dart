@@ -3,6 +3,7 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:http/http.dart' as http;
@@ -32,6 +33,9 @@ part 'session_files_ui.dart';
 part 'attachments.dart';
 part 'session_actions.dart';
 part 'feed_management.dart';
+part 'feed_search.dart';
+part 'chat_search.dart';
+part 'tool_timeline.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -501,11 +505,17 @@ class _AppShellState extends ConsumerState<AppShell>
     ref.listenManual(selectedServerProvider, (previous, next) {
       if (!identical(previous, next)) {
         ref.read(feedSelectionProvider.notifier).clear();
+        closeFeedSearch(ref);
+        ref.read(chatSearchOpenProvider.notifier).state = false;
       }
     });
     ref.listenManual(appDestinationProvider, (_, next) {
       if (next != AppDestination.feed) {
         ref.read(feedSelectionProvider.notifier).clear();
+        closeFeedSearch(ref);
+      }
+      if (next != AppDestination.chat) {
+        ref.read(chatSearchOpenProvider.notifier).state = false;
       }
     });
     unawaited(Future<void>.microtask(_restore));
@@ -612,6 +622,7 @@ class _AppShellState extends ConsumerState<AppShell>
   Widget build(BuildContext context) {
     final destination = ref.watch(appDestinationProvider);
     final selection = ref.watch(feedSelectionProvider);
+    final searchingFeed = ref.watch(feedSearchOpenProvider);
     final selecting =
         destination == AppDestination.feed && selection.isNotEmpty;
     final mutating = ref.watch(feedMutationBusyProvider);
@@ -619,11 +630,19 @@ class _AppShellState extends ConsumerState<AppShell>
         ref.watch(threadProvider.select((thread) => thread != null)) ||
         ref.watch(liveTurnProvider.select((turn) => turn != null));
     return PopScope(
-      canPop: destination == AppDestination.feed && !selecting && !mutating,
+      canPop:
+          destination == AppDestination.feed &&
+          !selecting &&
+          !mutating &&
+          !searchingFeed,
       onPopInvokedWithResult: (didPop, _) {
         if (!didPop && !mutating) {
           if (selecting) {
             ref.read(feedSelectionProvider.notifier).clear();
+            return;
+          }
+          if (destination == AppDestination.feed && searchingFeed) {
+            closeFeedSearch(ref);
             return;
           }
           ref.read(appDestinationProvider.notifier).state = AppDestination.feed;
@@ -647,16 +666,38 @@ class _AppShellState extends ConsumerState<AppShell>
                       : () => ref.read(appDestinationProvider.notifier).state =
                             AppDestination.feed,
                 ),
-          title: Text(switch (destination) {
-            AppDestination.feed =>
-              selecting ? '${selection.length} selected' : 'Sessions',
-            AppDestination.chat => 'Chat',
-            AppDestination.settings => 'Settings',
-          }),
+          title:
+              destination == AppDestination.feed && searchingFeed && !selecting
+              ? const FeedSearchField()
+              : Text(switch (destination) {
+                  AppDestination.feed =>
+                    selecting ? '${selection.length} selected' : 'Sessions',
+                  AppDestination.chat => 'Chat',
+                  AppDestination.settings => 'Settings',
+                }),
           actions: [
             if (destination == AppDestination.feed &&
+                !selecting &&
+                !searchingFeed)
+              IconButton(
+                tooltip: 'Search sessions',
+                icon: const Icon(Icons.search),
+                onPressed: () =>
+                    ref.read(feedSearchOpenProvider.notifier).state = true,
+              ),
+            if (destination == AppDestination.chat)
+              PopupMenuButton<String>(
+                tooltip: 'Chat options',
+                onSelected: (_) =>
+                    ref.read(chatSearchOpenProvider.notifier).state = true,
+                itemBuilder: (_) => const [
+                  PopupMenuItem(value: 'search', child: Text('Search in chat')),
+                ],
+              ),
+            if (destination == AppDestination.feed &&
                 canReturnToChat &&
-                !selecting)
+                !selecting &&
+                !searchingFeed)
               IconButton(
                 tooltip: 'Current chat',
                 icon: const Icon(Icons.chat_bubble_outline),
@@ -665,7 +706,9 @@ class _AppShellState extends ConsumerState<AppShell>
                     : () => ref.read(appDestinationProvider.notifier).state =
                           AppDestination.chat,
               ),
-            if (destination != AppDestination.settings && !selecting)
+            if (destination != AppDestination.settings &&
+                !selecting &&
+                !searchingFeed)
               IconButton(
                 tooltip: 'Settings',
                 icon: const Icon(Icons.settings_outlined),

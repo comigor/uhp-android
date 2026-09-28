@@ -264,10 +264,11 @@ class _ServerSessionsState extends ConsumerState<_ServerSessions> {
     if (server == null || _opening || _loading || _conversationBlocked(ref)) {
       return;
     }
+    final query = ref.read(feedSearchQueryProvider);
     setState(() => _opening = true);
     try {
       final cursors = <String>{};
-      while (_cursor != null) {
+      while (query.isEmpty && _cursor != null) {
         if (!cursors.add(_cursor!)) {
           throw const AppError(
             'The server repeated a pagination cursor. Refresh and try again.',
@@ -277,7 +278,11 @@ class _ServerSessionsState extends ConsumerState<_ServerSessions> {
         if (!_current || _conversationBlocked(ref)) return;
         if (_error != null) throw _error!;
       }
-      if (!_current || _conversationBlocked(ref)) return;
+      if (!_current ||
+          _conversationBlocked(ref) ||
+          query != ref.read(feedSearchQueryProvider)) {
+        return;
+      }
       final hidden = ref
           .read(appPreferencesProvider)
           .valueOrNull
@@ -286,7 +291,15 @@ class _ServerSessionsState extends ConsumerState<_ServerSessions> {
           .read(feedSelectionProvider.notifier)
           .selectAll(
             _sessions
-                .where((session) => !(hidden?.containsKey(session.id) ?? false))
+                .where(
+                  (session) =>
+                      !(hidden?.containsKey(session.id) ?? false) &&
+                      matchesFeedSearch(
+                        query,
+                        session.title,
+                        session.firstUserLine,
+                      ),
+                )
                 .map((session) => FeedTarget.remote(server, session)),
           );
     } catch (error) {
@@ -340,8 +353,13 @@ class _ServerSessionsState extends ConsumerState<_ServerSessions> {
             preferences.valueOrNull?.hiddenSessions[widget.server?.id],
       ),
     );
+    final query = ref.watch(feedSearchQueryProvider);
     final visibleSessions = _sessions
-        .where((session) => !(hiddenSessions?.containsKey(session.id) ?? false))
+        .where(
+          (session) =>
+              !(hiddenSessions?.containsKey(session.id) ?? false) &&
+              matchesFeedSearch(query, session.title, session.firstUserLine),
+        )
         .toList();
     final selection = ref.watch(feedSelectionProvider);
     final selecting = selection.isNotEmpty;
@@ -462,7 +480,9 @@ class _ServerSessionsState extends ConsumerState<_ServerSessions> {
                                   !_loading &&
                                   _error == null)
                                 Text(
-                                  widget.server == null
+                                  query.isNotEmpty
+                                      ? 'No matching loaded sessions.'
+                                      : widget.server == null
                                       ? 'Add a server in Settings, or browse On-device.'
                                       : 'No server sessions yet.',
                                 ),

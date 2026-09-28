@@ -12,7 +12,9 @@ class ThreadMessage {
     this.error,
     required this.createdAt,
     List<MessageAttachment> attachments = const [],
-  }) : attachments = List.unmodifiable(attachments);
+    List<ToolCall> tools = const [],
+  }) : attachments = List.unmodifiable(attachments),
+       tools = List.unmodifiable(tools);
 
   final String role;
   final String text;
@@ -23,6 +25,7 @@ class ThreadMessage {
   final String? error;
   final DateTime createdAt;
   final List<MessageAttachment> attachments;
+  final List<ToolCall> tools;
 
   factory ThreadMessage.fromJson(Map<String, dynamic> json) {
     final role = json['role'] as String? ?? 'unknown';
@@ -39,6 +42,7 @@ class ThreadMessage {
           : TokenUsage.fromJson(json['usage'] as Map<String, dynamic>),
       error: json['error'] as String?,
       createdAt: DateTime.parse(json['createdAt'] as String),
+      tools: _parseToolCalls(json['tools']),
       attachments: (json['attachments'] as List<dynamic>? ?? const [])
           .map(
             (value) =>
@@ -57,6 +61,7 @@ class ThreadMessage {
     'usage': usage?.toJson(),
     'error': error,
     'createdAt': createdAt.toUtc().toIso8601String(),
+    if (tools.isNotEmpty) 'tools': tools.map((tool) => tool.toJson()).toList(),
     if (attachments.isNotEmpty)
       'attachments': attachments
           .map((attachment) => attachment.toJson())
@@ -318,6 +323,7 @@ class ThreadSummary {
   const ThreadSummary({
     required this.id,
     required this.title,
+    this.firstUserLine = '',
     this.archived = false,
     this.managementLocked = false,
     required this.serverId,
@@ -330,6 +336,7 @@ class ThreadSummary {
 
   final String id;
   final String title;
+  final String firstUserLine;
   final bool archived;
   final bool managementLocked;
   final String serverId;
@@ -342,6 +349,7 @@ class ThreadSummary {
   factory ThreadSummary.fromThread(ConversationThread thread) => ThreadSummary(
     id: thread.id,
     title: thread.title,
+    firstUserLine: _firstUserLine(thread.messages),
     archived: thread.archived,
     managementLocked: thread.managementLocked,
     serverId: thread.server.id,
@@ -352,12 +360,20 @@ class ThreadSummary {
     updatedAt: thread.updatedAt,
   );
 
+  static String _firstUserLine(List<ThreadMessage> messages) {
+    for (final message in messages) {
+      if (message.role == 'user') return _firstTextLine(message.text);
+    }
+    return '';
+  }
+
   factory ThreadSummary.fromJson(Map<String, dynamic> json) {
     final id = json['id'] as String;
     _validateThreadId(id);
     return ThreadSummary(
       id: id,
       title: json['title'] as String,
+      firstUserLine: json['firstUserLine'] as String? ?? '',
       archived: json['archived'] == true,
       managementLocked: json['managementLocked'] == true,
       serverId: json['serverId'] as String,
@@ -372,6 +388,7 @@ class ThreadSummary {
   Map<String, dynamic> toJson() => {
     'id': id,
     'title': title,
+    'firstUserLine': firstUserLine,
     'archived': archived,
     'managementLocked': managementLocked,
     'serverId': serverId,
@@ -502,6 +519,7 @@ class ThreadStore {
         error: error,
         createdAt: previous.createdAt,
         attachments: previous.attachments,
+        tools: previous.tools,
       );
       // A late result can settle its own row, never a newer turn or its pointer.
       final updateSession =
@@ -561,6 +579,7 @@ class ThreadStore {
           (turn) => ThreadMessage(
             role: turn.role,
             text: turn.text,
+            tools: turn.tools,
             sessionId: session.id,
             createdAt: now,
           ),
@@ -569,7 +588,8 @@ class ThreadStore {
     final List<ThreadMessage> messages;
     if (existing == null) {
       messages = imported;
-    } else if (imported.isEmpty || imported.every((row) => row.text.isEmpty)) {
+    } else if (imported.isEmpty ||
+        imported.every((row) => row.text.isEmpty && row.tools.isEmpty)) {
       messages = existing.messages;
     } else {
       final local = existing.messages;
@@ -588,7 +608,20 @@ class ThreadStore {
         final matches = matching[(row.role, row.text)];
         while (matches != null && matches.isNotEmpty) {
           final match = matches.removeLast();
-          if (retained.add(match)) return match;
+          if (retained.add(match)) {
+            return ThreadMessage(
+              role: match.role,
+              text: match.text,
+              responseId: match.responseId,
+              sessionId: match.sessionId,
+              status: match.status,
+              usage: match.usage,
+              error: match.error,
+              createdAt: match.createdAt,
+              attachments: match.attachments,
+              tools: row.tools,
+            );
+          }
         }
         return row;
       }).toList();
@@ -798,20 +831,37 @@ class ThreadStore {
       strict: strict,
     );
     if (value == null) return [];
+    final List<Map<String, dynamic>> rows;
+    final List<ThreadSummary> summaries;
     try {
-      final summaries = (value as List<dynamic>)
-          .map((row) => ThreadSummary.fromJson(row as Map<String, dynamic>))
-          .toList();
+      rows = (value as List<dynamic>).cast<Map<String, dynamic>>();
+      summaries = rows.map(ThreadSummary.fromJson).toList();
       if (summaries.map((summary) => summary.id).toSet().length !=
           summaries.length) {
         throw const FormatException('Duplicate thread identifiers');
       }
-      summaries.sort((a, b) => b.updatedAt.compareTo(a.updatedAt));
-      return summaries;
     } catch (_) {
       debugPrint('Ignoring malformed local thread index.');
       return [];
     }
+    var migrated = false;
+    for (var index = 0; index < rows.length; index++) {
+      final row = rows[index];
+      if (row.containsKey('firstUserLine')) continue;
+      final thread = await _readThread(directory, summaries[index].id);
+      // Preserve every summary and its metadata, even if its file is malformed.
+      // Persisting an empty preview also prevents repeated reads of that file.
+      row['firstUserLine'] = thread == null
+          ? ''
+          : ThreadSummary._firstUserLine(thread.messages);
+      summaries[index] = ThreadSummary.fromJson(row);
+      migrated = true;
+    }
+    if (migrated) {
+      await _atomicWrite(File('${directory.path}/index.json'), rows);
+    }
+    summaries.sort((a, b) => b.updatedAt.compareTo(a.updatedAt));
+    return summaries;
   }
 
   Future<ConversationThread?> _readThread(

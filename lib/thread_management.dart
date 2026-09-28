@@ -82,13 +82,18 @@ class _HistoryScreenState extends ConsumerState<HistoryScreen> {
         ref.watch(feedMutationBusyProvider);
     final selection = ref.watch(feedSelectionProvider);
     final selecting = selection.isNotEmpty;
+    final query = ref.watch(feedSearchQueryProvider);
     return history.when(
       loading: () => const Center(child: CircularProgressIndicator()),
       error: (error, _) => Center(child: Text('Cannot load history: $error')),
       data: (threads) {
-        final visible = _showArchived
-            ? threads
-            : threads.where((thread) => !thread.archived).toList();
+        final visible = threads
+            .where(
+              (thread) =>
+                  (_showArchived || !thread.archived) &&
+                  matchesFeedSearch(query, thread.title, thread.firstUserLine),
+            )
+            .toList();
         final rowCount = visible.isEmpty ? 1 : visible.length;
         return Column(
           children: [
@@ -113,9 +118,13 @@ class _HistoryScreenState extends ConsumerState<HistoryScreen> {
                     );
                   }
                   if (visible.isEmpty) {
-                    return const Padding(
-                      padding: EdgeInsets.all(24),
-                      child: Text('No saved conversations.'),
+                    return Padding(
+                      padding: const EdgeInsets.all(24),
+                      child: Text(
+                        query.isEmpty
+                            ? 'No saved conversations.'
+                            : 'No matching saved conversations.',
+                      ),
                     );
                   }
                   final summary = visible[index];
