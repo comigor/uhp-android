@@ -466,6 +466,7 @@ class _TasksScreenState extends ConsumerState<TasksScreen>
       composer: Padding(
         padding: const EdgeInsets.all(16),
         child: Column(
+          mainAxisSize: MainAxisSize.min,
           children: [
             Text(
               thread == null ||

@@ -272,6 +272,10 @@ void main() {
         expect(persisted.updatedAt, thread.updatedAt);
         expect(fixture.alarms, isEmpty);
       });
+      // Re-enter the visible, inactive state before checking the partial UI;
+      // resumed below is what starts the server recovery request.
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.hidden);
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
       await tester.pumpAndSettle();
       expect(find.text('Partial answer', findRichText: true), findsOneWidget);
       expect(find.text('Server still working…'), findsOneWidget);

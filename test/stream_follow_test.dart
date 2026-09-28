@@ -15,6 +15,9 @@ final _scrollView = find.descendant(
   of: find.byType(TasksScreen),
   matching: find.byType(CustomScrollView),
 );
+final _composer = find.byWidgetPredicate(
+  (widget) => widget is TextField && widget.decoration?.labelText == 'Prompt',
+);
 
 ConversationThread _thread({
   String id = 'chat',
@@ -59,12 +62,22 @@ ScrollController _controller(WidgetTester tester) =>
     tester.widget<CustomScrollView>(_scrollView).controller!;
 
 void _expectVisibleTail(WidgetTester tester) {
+  final position = _controller(tester).position;
+  expect(position.pixels, closeTo(position.maxScrollExtent, 0.5));
   final card = tester.widget<ActiveTurnCard>(find.byType(ActiveTurnCard));
   final tail = find.byKey(card.tailKey!);
   final viewport = tester.getRect(_scrollView);
   final y = tester.getTopLeft(tail).dy;
   expect(y, greaterThanOrEqualTo(viewport.top));
   expect(y, lessThanOrEqualTo(viewport.bottom));
+  final composer = tester.getRect(_composer);
+  expect(composer.top, greaterThanOrEqualTo(viewport.bottom));
+  expect(
+    composer.bottom,
+    lessThanOrEqualTo(
+      tester.view.physicalSize.height - tester.view.viewInsets.bottom,
+    ),
+  );
 }
 
 Future<ProviderContainer> _mount(
@@ -123,45 +136,63 @@ void main() {
     },
   );
 
-  for (final drag in [const Offset(0, 180), const Offset(0, -180)]) {
-    testWidgets(
-      'user reading motion $drag detaches without delta offset drift',
-      (tester) async {
-        final container = await _mount(tester);
-        final initial = _controller(tester).offset;
-        await tester.drag(_scrollView, drag);
-        // Let the genuine gesture settle before measuring the pinned offset.
-        await tester.pump(const Duration(seconds: 1));
-        await _frames(tester);
-        final detached = _controller(tester).offset;
-        expect(detached, isNot(initial));
-        expect(_pill, findsOneWidget);
-        for (final lines in [65, 85, 110]) {
-          _stream(container, lines);
-          await _frames(tester);
-          expect(_controller(tester).offset, detached);
-          expect(_pill, findsOneWidget);
-        }
-        await tester.tap(_pill);
-        await _frames(tester);
-        expect(_pill, findsNothing);
-        _expectVisibleTail(tester);
-        final resumed = _controller(tester).offset;
-        _stream(container, 145);
-        await _frames(tester);
-        expect(_controller(tester).offset, greaterThan(resumed));
-        _expectVisibleTail(tester);
-        await tester.pumpWidget(const SizedBox.shrink());
-      },
-    );
-  }
+  testWidgets('upward history reading detaches without delta offset drift', (
+    tester,
+  ) async {
+    final container = await _mount(tester);
+    final initial = _controller(tester).offset;
+    final composer = tester.getRect(_composer);
+    await tester.drag(_scrollView, const Offset(0, 180));
+    // Let the genuine gesture settle before measuring the reading offset.
+    await tester.pump(const Duration(seconds: 1));
+    await _frames(tester);
+    final detached = _controller(tester).offset;
+    expect(detached, lessThan(initial));
+    expect(_pill, findsOneWidget);
+    expect(tester.getRect(_composer), composer);
+    for (final lines in [65, 85, 110]) {
+      _stream(container, lines);
+      await _frames(tester);
+      expect(_controller(tester).offset, detached);
+      expect(_pill, findsOneWidget);
+      expect(tester.getRect(_composer), composer);
+    }
+    await tester.tap(_pill);
+    await _frames(tester);
+    expect(_pill, findsNothing);
+    _expectVisibleTail(tester);
+    final resumed = _controller(tester).offset;
+    _stream(container, 145);
+    await _frames(tester);
+    expect(_controller(tester).offset, greaterThan(resumed));
+    _expectVisibleTail(tester);
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
+  testWidgets('downward motion at the latest bottom keeps following', (
+    tester,
+  ) async {
+    final container = await _mount(tester);
+    await tester.drag(_scrollView, const Offset(0, -180));
+    await tester.pump(const Duration(seconds: 1));
+    await _frames(tester);
+    expect(_pill, findsNothing);
+    _expectVisibleTail(tester);
+    final beforeGrowth = _controller(tester).offset;
+    _stream(container, 90);
+    await _frames(tester);
+    expect(_pill, findsNothing);
+    expect(_controller(tester).offset, greaterThan(beforeGrowth));
+    _expectVisibleTail(tester);
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
 
   testWidgets(
     'pill appears only for a detached live turn and resets next turn',
     (tester) async {
       final container = await _mount(tester, live: false);
       expect(_pill, findsNothing);
-      await tester.drag(_scrollView, const Offset(0, -400));
+      await tester.drag(_scrollView, const Offset(0, 400));
       await tester.pump(const Duration(seconds: 1));
       expect(_pill, findsNothing);
       _stream(container, 60);
@@ -187,12 +218,12 @@ void main() {
     (tester) async {
       final container = await _mount(tester);
       addTearDown(tester.view.resetViewInsets);
-      final beforeKeyboard = _controller(tester).offset;
+      final beforeKeyboard = tester.getSize(_scrollView).height;
       tester.view.viewInsets = const FakeViewPadding(bottom: 240);
       await _frames(tester);
       expect(_pill, findsNothing);
       _expectVisibleTail(tester);
-      expect(_controller(tester).offset, greaterThan(beforeKeyboard));
+      expect(tester.getSize(_scrollView).height, lessThan(beforeKeyboard));
       tester.view.resetViewInsets();
       await _frames(tester);
       expect(_pill, findsNothing);
@@ -201,10 +232,12 @@ void main() {
       await tester.pump(const Duration(seconds: 1));
       await _frames(tester);
       expect(_pill, findsOneWidget);
+      final beforeDetachedResize = _controller(tester).offset;
       tester.view.viewInsets = const FakeViewPadding(bottom: 180);
       await _frames(tester);
       final detached = _controller(tester).offset;
       expect(_pill, findsOneWidget);
+      expect(detached, beforeDetachedResize);
       _stream(container, 95);
       await _frames(tester);
       expect(_controller(tester).offset, detached);
@@ -218,8 +251,8 @@ void main() {
     (tester) async {
       final container = await _mount(tester, live: false, count: 1000);
       addTearDown(tester.view.resetViewInsets);
-      tester.view.physicalSize = const Size(800, 300);
-      tester.view.viewInsets = const FakeViewPadding(bottom: 200);
+      tester.view.physicalSize = const Size(430, 900);
+      tester.view.viewInsets = const FakeViewPadding(bottom: 320);
       await _frames(tester);
       _stream(container, 80);
       await _frames(tester);
@@ -274,7 +307,12 @@ void main() {
       container.read(liveTurnProvider.notifier).state = null;
       container.read(threadProvider.notifier).state = _thread(id: 'other');
       await _frames(tester);
-      expect(_controller(tester).offset, 0);
+      final position = _controller(tester).position;
+      expect(position.pixels, closeTo(position.maxScrollExtent, 0.5));
+      expect(
+        find.textContaining('History 79', findRichText: true),
+        findsOneWidget,
+      );
       expect(_pill, findsNothing);
       expect(find.byType(ActiveTurnCard), findsNothing);
       _stream(container, 60);

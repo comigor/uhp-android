@@ -43,6 +43,28 @@ final _count = find.byKey(const ValueKey('chat-search-count'));
 Finder _paragraph(String text) => find.byWidgetPredicate(
   (widget) => widget is RichText && widget.text.toPlainText() == text,
 );
+final _scrollView = find.descendant(
+  of: find.byType(TasksScreen),
+  matching: find.byType(CustomScrollView),
+);
+
+List<TextSpan> _highlights(WidgetTester tester, String text) {
+  final rich = tester.widget<RichText>(_paragraph(text));
+  return (rich.text as TextSpan).children!
+      .whereType<TextSpan>()
+      .where((span) => span.style?.backgroundColor != null)
+      .toList();
+}
+
+Rect _matchRect(WidgetTester tester, String text, int start) {
+  final paragraph = tester.renderObject<RenderParagraph>(_paragraph(text));
+  final box = paragraph
+      .getBoxesForSelection(
+        TextSelection(baseOffset: start, extentOffset: start + 6),
+      )
+      .first;
+  return box.toRect().shift(paragraph.localToGlobal(Offset.zero));
+}
 
 void main() {
   Future<ProviderContainer> mount(
@@ -96,27 +118,33 @@ void main() {
         await tester.pumpAndSettle();
         expectCount(tester, '1/3');
         expect(find.byType(MessageContent), findsNothing);
-        final rich = tester.widget<RichText>(_paragraph('Newest [A] then [a]'));
-        final spans = (rich.text as TextSpan).children!
-            .whereType<TextSpan>()
-            .toList();
-        final highlighted = spans
-            .where((span) => span.style?.backgroundColor != null)
-            .toList();
+        final activeColor = _highlights(
+          tester,
+          'Older [a] response',
+        ).single.style!.backgroundColor;
+        var highlighted = _highlights(tester, 'Newest [A] then [a]');
         expect(highlighted.map((span) => span.text), ['[A]', '[a]']);
         expect(
-          highlighted.first.style!.backgroundColor,
-          isNot(highlighted.last.style!.backgroundColor),
+          highlighted.every(
+            (span) => span.style!.backgroundColor != activeColor,
+          ),
+          isTrue,
         );
         await tester.tap(find.byTooltip('Previous match'));
         await tester.pumpAndSettle();
         expectCount(tester, '3/3');
+        highlighted = _highlights(tester, 'Newest [A] then [a]');
+        expect(highlighted.last.style!.backgroundColor, activeColor);
+        expect(highlighted.first.style!.backgroundColor, isNot(activeColor));
         await tester.tap(find.byTooltip('Next match'));
         await tester.pumpAndSettle();
         expectCount(tester, '1/3');
         await tester.tap(find.byTooltip('Next match'));
         await tester.pumpAndSettle();
         expectCount(tester, '2/3');
+        highlighted = _highlights(tester, 'Newest [A] then [a]');
+        expect(highlighted.first.style!.backgroundColor, activeColor);
+        expect(highlighted.last.style!.backgroundColor, isNot(activeColor));
       },
     );
   }
@@ -158,39 +186,40 @@ void main() {
         _thread([
           oldest,
           for (var i = 1; i < 250; i++)
-            'row $i\n${List.filled(i % 9 + 1, 'variable height').join('\n')}',
+            i == 125
+                ? 'Middle needle'
+                : 'row $i\n${List.filled(i % 9 + 1, 'variable height').join('\n')}',
           'Newest needle',
         ]),
       );
       await tester.enterText(_query, 'needle');
       await tester.pumpAndSettle();
-      expectCount(tester, '1/3');
-      await tester.tap(find.byTooltip('Next match'));
-      await tester.pumpAndSettle();
-      expectCount(tester, '2/3');
+      expectCount(tester, '1/4');
       expect(_paragraph(oldest), findsOneWidget);
+      final viewport = tester.getRect(_scrollView);
+      final first = _matchRect(tester, oldest, 0);
+      expect(first.top, greaterThanOrEqualTo(viewport.top));
+      expect(first.bottom, lessThanOrEqualTo(viewport.bottom));
       expect(find.byType(Card).evaluate().length, lessThan(30));
       final barTop = tester.getTopLeft(_query).dy;
       await tester.tap(find.byTooltip('Next match'));
       await tester.pumpAndSettle();
-      expectCount(tester, '3/3');
-      final paragraph = tester.renderObject<RenderParagraph>(
-        _paragraph(oldest),
-      );
-      final start = oldest.lastIndexOf('Needle');
-      final box = paragraph
-          .getBoxesForSelection(
-            TextSelection(baseOffset: start, extentOffset: start + 6),
-          )
-          .first;
-      final y = paragraph.localToGlobal(Offset(0, box.top)).dy;
-      expect(y, greaterThan(tester.getBottomLeft(_query).dy));
-      expect(
-        y,
-        lessThan(
-          tester.view.physicalSize.height / tester.view.devicePixelRatio,
-        ),
-      );
+      expectCount(tester, '2/4');
+      final last = _matchRect(tester, oldest, oldest.lastIndexOf('Needle'));
+      expect(last.center.dy, closeTo(viewport.center.dy, 1));
+      expect(find.byType(Card).evaluate().length, lessThan(30));
+      await tester.tap(find.byTooltip('Next match'));
+      await tester.pumpAndSettle();
+      expectCount(tester, '3/4');
+      final middle = _matchRect(tester, 'Middle needle', 7);
+      expect(middle.center.dy, closeTo(viewport.center.dy, 1));
+      expect(find.byType(Card).evaluate().length, lessThan(30));
+      await tester.tap(find.byTooltip('Next match'));
+      await tester.pumpAndSettle();
+      expectCount(tester, '4/4');
+      final newest = _matchRect(tester, 'Newest needle', 7);
+      expect(newest.top, greaterThanOrEqualTo(viewport.top));
+      expect(newest.bottom, lessThanOrEqualTo(viewport.bottom));
       expect(tester.getTopLeft(_query).dy, barTop);
       expect(find.byType(Card).evaluate().length, lessThan(30));
     },

@@ -48,11 +48,11 @@ class _ChatSearchViewState extends ConsumerState<_ChatSearchView> {
   bool _following = true;
   bool _followScheduled = false;
   int _followVersion = 0;
+  (double, double, double)? _scrollDimensions;
   final _matchesByMessage = <int, List<_ChatMatch>>{};
   List<_ChatMatch> _matches = const [];
   int _active = 0;
-  int? _anchorMessage;
-  bool _anchorAtLive = false;
+  int _anchorIndex = 0;
   int _scrollRevision = 0;
   int _requestVersion = 0;
   late final ProviderSubscription<bool> _openSubscription;
@@ -62,6 +62,7 @@ class _ChatSearchViewState extends ConsumerState<_ChatSearchView> {
   @override
   void initState() {
     super.initState();
+    _anchorIndex = _lastIndex;
     _openSubscription = ref.listenManual(chatSearchOpenProvider, (_, open) {
       if (!open) setState(_clear);
     });
@@ -72,17 +73,19 @@ class _ChatSearchViewState extends ConsumerState<_ChatSearchView> {
       }
     });
     _liveSubscription = ref.listenManual(liveTurnProvider, (previous, next) {
-      if (next == null) {
+      if (next != null && previous == null) {
         _resetFollow();
-      } else {
-        if (previous == null) {
-          _resetFollow();
-          _requestVersion++;
-        }
-        _scheduleFollow();
+        _requestVersion++;
       }
+      _showFollow.value = next != null && !_following;
+      _scheduleFollow();
     });
-    if (widget.hasLiveTurn) _scheduleFollow();
+    _scheduleFollow();
+  }
+
+  int get _lastIndex {
+    final count = widget.messages.length + (widget.hasLiveTurn ? 1 : 0);
+    return count == 0 ? 0 : count - 1;
   }
 
   void _resetFollow() {
@@ -93,11 +96,11 @@ class _ChatSearchViewState extends ConsumerState<_ChatSearchView> {
   }
 
   void _detach() {
-    if (!widget.hasLiveTurn || !_following) return;
+    if (!_following) return;
     _following = false;
     _followVersion++;
     _followScheduled = false;
-    _showFollow.value = true;
+    _showFollow.value = widget.hasLiveTurn;
   }
 
   void _resumeFollow() {
@@ -118,32 +121,19 @@ class _ChatSearchViewState extends ConsumerState<_ChatSearchView> {
         return;
       }
       _followScheduled = false;
-      if (!_following ||
-          !widget.hasLiveTurn ||
-          ref.read(liveTurnProvider) == null ||
-          !_scroll.hasClients) {
-        return;
-      }
-      final tail = _liveTailKey.currentContext?.findRenderObject();
-      if (_anchorMessage != null || tail is! RenderBox || !tail.attached) {
-        // Recreate the indexed viewport at the live row. Walking pixel offsets
-        // back through distant history would eagerly lay out intervening rows.
+      if (!_following || !_scroll.hasClients) return;
+      if (_anchorIndex != _lastIndex) {
+        // Rebase at the latest row without laying out distant history. Keep the
+        // index stable while detached so append-only updates cannot shift it.
         setState(() {
-          _anchorMessage = null;
-          _anchorAtLive = true;
+          _anchorIndex = _lastIndex;
           _scrollRevision++;
         });
         _scheduleFollow();
         return;
       }
-      final viewport = _viewportKey.currentContext?.findRenderObject();
-      if (viewport is! RenderBox || !viewport.attached) return;
-      final tailY = tail.localToGlobal(Offset.zero, ancestor: viewport).dy;
-      final position = _scroll.position;
-      final offset = (_scroll.offset + tailY - viewport.size.height + 16)
-          .clamp(position.minScrollExtent, position.maxScrollExtent)
-          .toDouble();
-      if ((offset - _scroll.offset).abs() > 0.5) _scroll.jumpTo(offset);
+      final bottom = _scroll.position.maxScrollExtent;
+      if ((bottom - _scroll.offset).abs() > 0.5) _scroll.jumpTo(bottom);
     });
     // Metrics can arrive between frames; a distant lazy row may also have no
     // mounted consumer requesting one. A callback alone does not start a frame.
@@ -151,24 +141,35 @@ class _ChatSearchViewState extends ConsumerState<_ChatSearchView> {
   }
 
   bool _onScroll(ScrollNotification notification) {
-    if (notification.depth == 0 &&
-        notification.metrics.axis == Axis.vertical &&
-        ((notification is ScrollStartNotification &&
-                notification.dragDetails != null) ||
-            (notification is UserScrollNotification &&
-                notification.direction != ScrollDirection.idle))) {
-      // Either direction is intentional reading in a newest-first transcript.
-      // Programmatic jumps and viewport metrics never enter this branch.
+    if (notification.depth != 0 || notification.metrics.axis != Axis.vertical) {
+      return false;
+    }
+    if (notification is UserScrollNotification &&
+        notification.direction == ScrollDirection.forward) {
       _detach();
+    } else if (notification is ScrollEndNotification &&
+        notification.metrics.extentAfter <= 1 &&
+        !_following &&
+        _query.text.isEmpty) {
+      _resetFollow();
     }
     return false;
   }
 
   bool _onMetrics(ScrollMetricsNotification notification) {
-    if (notification.depth == 0 &&
-        notification.metrics.axis == Axis.vertical &&
-        widget.hasLiveTurn) {
-      _scheduleFollow();
+    if (notification.depth == 0 && notification.metrics.axis == Axis.vertical) {
+      final metrics = notification.metrics;
+      final dimensions = (
+        metrics.minScrollExtent,
+        metrics.maxScrollExtent,
+        metrics.viewportDimension,
+      );
+      // Selection can scroll text into view without resizing the transcript.
+      // Do not snap it back and dismiss the native selection toolbar.
+      if (_scrollDimensions != dimensions) {
+        _scrollDimensions = dimensions;
+        _scheduleFollow();
+      }
     }
     return false;
   }
@@ -186,19 +187,19 @@ class _ChatSearchViewState extends ConsumerState<_ChatSearchView> {
     super.didUpdateWidget(oldWidget);
     if (widget.threadId != oldWidget.threadId) {
       _clear();
-      _anchorMessage = null;
-      _anchorAtLive = false;
+      _anchorIndex = _lastIndex;
       _scrollRevision++;
       _resetFollow();
     } else if (!identical(widget.messages, oldWidget.messages) ||
         widget.hasLiveTurn != oldWidget.hasLiveTurn) {
-      if (_anchorMessage != null && _anchorMessage! >= widget.messages.length) {
-        _anchorMessage = null;
+      if (_anchorIndex > _lastIndex) {
+        _anchorIndex = _lastIndex;
         _scrollRevision++;
       }
       if (_query.text.isNotEmpty) _findMatches(preserveActive: true);
     }
-    if (widget.hasLiveTurn) _scheduleFollow();
+    _showFollow.value = widget.hasLiveTurn && !_following;
+    _scheduleFollow();
   }
 
   void _findMatches({bool preserveActive = false}) {
@@ -211,8 +212,7 @@ class _ChatSearchViewState extends ConsumerState<_ChatSearchView> {
     _active = 0;
     if (_query.text.isEmpty) return;
     final pattern = RegExp(RegExp.escape(_query.text), caseSensitive: false);
-    // Navigation follows the visible newest-first transcript order.
-    for (var index = widget.messages.length - 1; index >= 0; index--) {
+    for (var index = 0; index < widget.messages.length; index++) {
       for (final match in pattern.allMatches(widget.messages[index].text)) {
         final occurrence = _ChatMatch(index, match.start, match.end);
         _matches.add(occurrence);
@@ -236,8 +236,7 @@ class _ChatSearchViewState extends ConsumerState<_ChatSearchView> {
   void _revealActive() {
     _detach();
     final match = _matches[_active];
-    _anchorMessage = match.messageIndex;
-    _anchorAtLive = false;
+    _anchorIndex = match.messageIndex;
     _scrollRevision++;
     final request = ++_requestVersion;
     final threadId = widget.threadId;
@@ -258,7 +257,12 @@ class _ChatSearchViewState extends ConsumerState<_ChatSearchView> {
       if (boxes.isEmpty) return;
       final top = paragraph.localToGlobal(Offset(0, boxes.first.top)).dy;
       final viewportTop = viewport.localToGlobal(Offset.zero).dy;
-      final offset = _scroll.offset + top - viewportTop - 24;
+      final offset =
+          _scroll.offset +
+          top -
+          viewportTop +
+          (boxes.first.bottom - boxes.first.top) / 2 -
+          viewport.size.height / 2;
       final position = _scroll.position;
       _scroll.jumpTo(
         offset
@@ -283,12 +287,10 @@ class _ChatSearchViewState extends ConsumerState<_ChatSearchView> {
     super.dispose();
   }
 
-  Widget _row(BuildContext context, int visualIndex, bool searching) {
-    if (widget.hasLiveTurn && visualIndex == 0) {
+  Widget _row(BuildContext context, int index, bool searching) {
+    if (widget.hasLiveTurn && index == widget.messages.length) {
       return ActiveTurnCard(tailKey: _liveTailKey);
     }
-    final index =
-        widget.messages.length - 1 - visualIndex + (widget.hasLiveTurn ? 1 : 0);
     final active = _matches.isEmpty ? null : _matches[_active];
     return KeyedSubtree(
       key: ValueKey((widget.threadId, index)),
@@ -311,12 +313,7 @@ class _ChatSearchViewState extends ConsumerState<_ChatSearchView> {
     final open = ref.watch(chatSearchOpenProvider);
     final searching = open && _query.text.isNotEmpty;
     final count = widget.messages.length + (widget.hasLiveTurn ? 1 : 0);
-    final anchor = _anchorMessage == null
-        ? 0
-        : widget.messages.length -
-              1 -
-              _anchorMessage! +
-              (widget.hasLiveTurn ? 1 : 0);
+    final anchor = _anchorIndex;
     const centerKey = ValueKey('chat-message-anchor');
     return CallbackShortcuts(
       bindings: {const SingleActivator(LogicalKeyboardKey.escape): _close},
@@ -379,13 +376,9 @@ class _ChatSearchViewState extends ConsumerState<_ChatSearchView> {
                       child: CustomScrollView(
                         key: ValueKey((widget.threadId, _scrollRevision)),
                         controller: _scroll,
-                        center:
-                            count > 0 &&
-                                (_anchorAtLive || _anchorMessage != null)
-                            ? centerKey
-                            : null,
+                        center: count > 0 ? centerKey : null,
+                        anchor: count > 0 ? 1 : 0,
                         slivers: [
-                          SliverToBoxAdapter(child: widget.composer),
                           if (count == 0)
                             const SliverFillRemaining(
                               hasScrollBody: false,
@@ -394,7 +387,7 @@ class _ChatSearchViewState extends ConsumerState<_ChatSearchView> {
                               ),
                             )
                           else ...[
-                            if (_anchorMessage != null)
+                            if (anchor > 0)
                               SliverList.builder(
                                 itemCount: anchor,
                                 itemBuilder: (context, index) => _row(
@@ -443,6 +436,7 @@ class _ChatSearchViewState extends ConsumerState<_ChatSearchView> {
               ],
             ),
           ),
+          widget.composer,
         ],
       ),
     );

@@ -102,7 +102,6 @@ void main() {
         const source = '**Bold** and next\n\nSecond paragraph with `code`.\n';
         await mount(tester, text: source, linked: linked);
         final text = find.text('Bold and next', findRichText: true);
-        await tester.ensureVisible(text);
         await tester.longPress(text);
         await tester.pumpAndSettle();
         expect(find.text('Copy full text'), findsOneWidget);
@@ -121,13 +120,14 @@ void main() {
       const source = '  **literal user text**\nsecond line  ';
       final fixture = await mount(tester, text: source, role: 'user');
       final text = find.text(source);
-      await tester.ensureVisible(text);
       await tester.longPress(text);
       await tester.pumpAndSettle();
       await tester.tap(find.text('Share'));
       await tester.pumpAndSettle();
       expect(fixture.platform.texts, [source]);
       expect(find.widgetWithText(Chip, 'notes.txt'), findsOneWidget);
+      await tester.drag(find.byType(CustomScrollView), const Offset(0, -200));
+      await tester.pumpAndSettle();
       await tester.longPress(text);
       await tester.pumpAndSettle();
       await tester.tap(find.text('Copy full text'));
@@ -142,7 +142,6 @@ void main() {
       const source = '**Bold** and next';
       await mount(tester, text: source);
       final text = find.text('Bold and next', findRichText: true);
-      await tester.ensureVisible(text);
       await tester.longPressAt(tester.getTopLeft(text) + const Offset(8, 8));
       await tester.pumpAndSettle();
       await tester.tap(find.text('Select text'));

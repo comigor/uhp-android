@@ -96,13 +96,13 @@ The linked conversation opens in **Chat**. Continuation uses the server's `last_
 
 Open a linked thread from **On-device**, then use its server-session action to refresh the server transcript and status. This refresh action is disabled while a locally saved turn is server-continuing; use **Check now** instead. Other running sessions show a live note and disable sending until refreshed. Browsing does not subscribe to another client's live output.
 
-## v0.9.0: conversational behavior
+## v0.9.1: chronological chat and conversational behavior
 
 ### Live response feedback and scrolling
 
 Before the first assistant text arrives, the active turn shows **Agent is working…**. Once text arrives, a static caret is painted at its tail without modifying Markdown, copied text, or code fences. Both indicators disappear when the local stream ends; neither adds a blinking timer or background work.
 
-New turns follow the live response tail, including when it grows beyond the viewport or the keyboard changes the available height. Scrolling manually in either direction, or navigating a chat-search match, detaches follow so incoming text does not move the scroll position. A floating down-arrow appears only while a live turn is detached; tap it to return to the tail and resume following. Saved history keeps its existing newest-first order and lazy rendering.
+Chat reads oldest to newest from top to bottom, with the composer fixed below the independently scrolling transcript. Opening a conversation shows its latest messages; saved appends and new turns follow the bottom, including when the live response grows beyond the viewport or the keyboard changes the available height. Scrolling upward to read history, or navigating a chat-search match, detaches follow so incoming text does not move the reading position. A floating down-arrow appears only while a live turn is detached; tap it to return to the tail and resume following. Moving toward the bottom does not detach. Indexed lazy rendering is retained for long histories, and the session feed remains newest-first.
 
 ### Per-conversation drafts
 
@@ -130,7 +130,7 @@ Search uses only already-loaded session cards or local summaries: it never fetch
 
 ### Chat search
 
-Choose **Chat options → Search in chat** for either a linked server chat or an On-device thread. The pinned search bar searches loaded saved message text, literally and case-insensitively, and shows the current occurrence and total. Up/down arrows navigate with wraparound in newest-first display order; Enter advances. Each occurrence is highlighted and the active occurrence has a distinct color. Indexed lazy slivers jump directly to distant variable-height messages without constructing the intervening history.
+Choose **Chat options → Search in chat** for either a linked server chat or an On-device thread. The pinned search bar searches loaded saved message text, literally and case-insensitively, and shows the current occurrence and total. Next moves to later chronological occurrences and Previous moves to earlier ones, with wraparound; Enter advances. Each occurrence is highlighted and the active occurrence has a distinct color. Indexed lazy slivers center the active match where scroll bounds allow and jump directly to distant variable-height messages without constructing the intervening history.
 
 While a query is nonempty, saved messages use selectable plain-text highlights rather than Markdown. **X** or Escape clears matches and restores normal rendering. Changing thread or leaving Chat closes search; queries are not persisted. Search never requests older server turns and does not search live stream activity, tool arguments, or attachment contents. No dependencies, background workers, or polling were added for these features.
 
