@@ -65,7 +65,7 @@ class SessionsFeed extends ConsumerWidget {
       ),
     );
     return _ServerSessions(
-      key: ValueKey((server, filter)),
+      key: ValueKey((server, filter, ref.watch(sessionFeedRevisionProvider))),
       server: server,
       filter: filter,
     );

@@ -15,6 +15,9 @@ Android-only Flutter client for Unified Harness Protocol servers.
 - **Stop** cancels the local stream and requests server cancellation with `POST /api/harness/v1/sessions/{encodedSessionId}/cancel` when a session ID is known.
 - Server-scoped session browsing, transcript import, and continuation linked to persistent local history.
 - Per-request model overrides and faithful read-modify-write updates to harness default models.
+- Session workspace browsing, changed-file diagnostics, streamed downloads and ZIP exports with native Android open/share actions.
+- Native multi-file attachments (25 MiB per file), authenticated uploads, and durable transcript attachment chips.
+- Explicit public-link publishing/revocation and confirmed server-session cancellation.
 - Error snackbars showing HTTP status and parsed `error` or `detail` text where available.
 - Streaming turns have a 300-second connection timeout and a 120-second idle timeout, with no total stream-duration timeout. Other network calls retain a 300-second timeout.
 
@@ -90,6 +93,22 @@ Opening a session fetches its detail and turns from `/api/harness/v1/sessions/{s
 The linked conversation opens in **Chat**. Continuation uses the server's `last_response_id` and `harness_id`, not the currently selected task harness. A fresh detail check before sending prevents continuation into a session already marked running or in progress; a missing continuation ID blocks sending rather than silently starting a different session. This check cannot prevent another client starting work immediately afterward; server-side concurrency checks remain authoritative. Completed replies update the linked continuation pointer and are saved through the same atomic thread/index write path as local tasks. Stop, background continuation, partial-output persistence, and storage retries work as for ordinary tasks.
 
 Open a linked thread from **On-device**, then use its server-session action to refresh the server transcript and status. This refresh action is disabled while a locally saved turn is server-continuing; use **Check now** instead. Other running sessions show a live note and disable sending until refreshed. Browsing does not subscribe to another client's live output.
+
+## Session files and attachments
+
+In a linked server chat, **Files** opens the workspace browser. **New this turn** requests `GET /api/harness/v1/sessions/{sid}/files?changed=true`; turn cards also offer **View files**, including failed and cancelled turns, so diagnostic artifacts remain accessible. Pull to refresh the list. A server response explicitly saying the session has no workspace is shown as an empty state; other failures remain errors.
+
+Tap a file to stream its authenticated `/api/harness/v1/containers/{sid}/files/{fileId}/content` response into private cache, then open it with Android. **Download all (.zip)** streams the session archive, respecting the changed-files filter. Progress and cancellation are available; failed/cancelled transfers remove partial files. **Share file** uses Android's share sheet, including when no viewer supports the downloaded type. Only a temporary read grant for the selected cached file is exposed; API credentials and server-provided download URLs are never handed to external apps. Completed downloads remain cache files and may be reclaimed by Android.
+
+The paperclip uses Android's document picker with multiple selection. Local-only chats show **attachments need a server session**; open the corresponding session from the server feed to use these tools. Each selected file is copied into private cache off the UI thread, capped at 25 MiB, and represented by a removable chip. Sending uploads each file to `/api/harness/v1/files` with `purpose=user_data`, then appends `<attachment id=file_… filename=…>` note lines to the outgoing prompt. An attachment-only prompt is allowed. Upload failures retain the draft for retry; once a turn is recorded, the draft copies are discarded. Removing a chip or leaving the composer also discards its private copy. Process termination can leave cache files until Android reclaims them; no persistent document URI permission is retained.
+
+Saved user messages retain the original prompt and attachment IDs, names, byte sizes, and MIME types, not the augmented transport input or cached paths. Chips survive reopening and transcript reconciliation. Older messages without attachment metadata remain readable. This note-line transport requires server support for that convention; the client does not silently substitute structured `input_file` requests.
+
+## Public sharing and session cancellation
+
+In a linked chat, open **Session actions → Share…**. Opening the dialog only fetches the current share state. **Publish link** explicitly enables access after a warning that anyone with the link can read the conversation and its files. **Copy link** and **Share link** use the saved server origin and `/share/{token}`, never the API path, response-provided URL, or credentials. **Revoke link** disables public sharing; reopening fetches the server state again. Revocation cannot retract copies already downloaded by others.
+
+**Session actions → Cancel session** requires confirmation and sends `POST /api/harness/v1/sessions/{sid}/cancel`. Success clears the active chat and returns to a refreshed feed; it does not delete the local transcript or server files. Unlike the in-turn **Stop** action, this action requires a successful 2xx response and reports 404/409 as errors. It is disabled during a live local turn or an unsaved turn, and confirmation rechecks those guards. Files, sharing, and cancellation are unavailable for local-only conversations. No new dependency, background task, or polling loop is added for these tools.
 
 ## Markdown rendering
 

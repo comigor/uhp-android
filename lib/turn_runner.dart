@@ -2,14 +2,16 @@ part of 'main.dart';
 
 @immutable
 class LiveTurn {
-  const LiveTurn({
+  LiveTurn({
     required this.input,
     this.progress = const TurnProgress(),
     this.stopping = false,
-  });
+    List<MessageAttachment> attachments = const [],
+  }) : attachments = List.unmodifiable(attachments);
   final String input;
   final TurnProgress progress;
   final bool stopping;
+  final List<MessageAttachment> attachments;
 }
 
 final liveTurnProvider = StateProvider<LiveTurn?>((ref) => null);
@@ -24,20 +26,27 @@ class TaskRunner {
   TaskRunner(this.ref);
   final Ref ref;
   StreamingTurn? _turn;
+  AttachmentUpload? _upload;
+  bool submissionRecorded = false;
   ServerConfig? _server;
   String? _linkedSessionId;
   Future<void>? _submission;
   TurnStatus? _stopRequested;
   bool _disposed = false;
 
-  Future<void> submit(String input, {String? model}) {
+  Future<void> submit(
+    String input, {
+    String? model,
+    List<PickedAttachment> attachments = const [],
+  }) {
     if (_submission != null) return _submission!;
+    submissionRecorded = false;
     if (ref.read(unsavedThreadProvider) != null) {
       return Future.error(
         const AppError('Save the completed turn before continuing.'),
       );
     }
-    if (input.trim().isEmpty) {
+    if (input.trim().isEmpty && attachments.isEmpty) {
       return Future.error(const AppError('Enter a prompt first.'));
     }
     final thread = ref.read(threadProvider);
@@ -62,8 +71,15 @@ class TaskRunner {
     _server = server;
     _linkedSessionId = thread?.serverSessionId;
     ref.read(taskBusyProvider.notifier).state = true;
-    ref.read(liveTurnProvider.notifier).state = LiveTurn(input: input.trim());
-    return _submission = _submit(input.trim(), thread, server, harness, model);
+    ref.read(liveTurnProvider.notifier).state = LiveTurn(input: input);
+    return _submission = _submit(
+      input,
+      thread,
+      server,
+      harness,
+      model,
+      List.unmodifiable(attachments),
+    );
   }
 
   Future<void> _submit(
@@ -72,9 +88,11 @@ class TaskRunner {
     ServerConfig server,
     Harness harness,
     String? model,
+    List<PickedAttachment> attachments,
   ) async {
     ResponseRecord? record;
     Object? failure;
+    List<MessageAttachment> uploaded = const [];
     try {
       final servers = await ref.read(serversProvider.future);
       if (!servers.any((s) => s.id == server.id)) {
@@ -82,14 +100,23 @@ class TaskRunner {
           'The saved server profile was deleted. This thread cannot continue.',
         );
       }
-      if (_disposed) return;
+      _checkBeforeTurn();
+      if (attachments.isNotEmpty) {
+        _upload = AttachmentUpload(
+          ref.read(httpClientProvider),
+          server,
+          attachments,
+        );
+        await _upload!.preflight();
+        _checkBeforeTurn();
+      }
       final service = ref.read(uhpServiceProvider);
       if (thread?.serverSessionId != null) {
         final session = await service.fetchSession(
           server,
           thread!.serverSessionId!,
         );
-        if (_disposed) return;
+        _checkBeforeTurn();
         if (session.id != thread.serverSessionId) {
           throw const AppError('The server returned a different session.');
         }
@@ -97,7 +124,7 @@ class TaskRunner {
         ref.read(threadProvider.notifier).state = thread;
         ref.read(unsavedThreadProvider.notifier).state = thread;
         await savePending();
-        if (_disposed) return;
+        _checkBeforeTurn();
         if (session.isRunning) {
           throw const AppError(
             'This server session is still running. Refresh it before sending.',
@@ -112,47 +139,48 @@ class TaskRunner {
           throw const AppError('This server session has no harness ID.');
         }
       }
-      if (_stopRequested != null) {
+      _checkBeforeTurn();
+      if (_upload != null) {
+        uploaded = await _upload!.run();
+        _upload = null;
+      }
+      _checkBeforeTurn();
+      ref.read(liveTurnProvider.notifier).state = LiveTurn(
+        input: input,
+        attachments: uploaded,
+      );
+      _turn = service.startTurn(
+        server,
+        ResponseDraft(
+          input: buildAttachmentInput(input, uploaded),
+          harnessId: thread?.serverHarnessId ?? harness.id,
+          previousResponseId: thread?.lastResponseId,
+          model: model,
+        ),
+      );
+      try {
+        record = await _turn!.run(
+          onProgress: (progress) {
+            if (!_disposed) {
+              ref.read(liveTurnProvider.notifier).state = LiveTurn(
+                input: input,
+                progress: progress,
+                stopping: _stopRequested != null,
+                attachments: uploaded,
+              );
+            }
+          },
+        );
+      } catch (error) {
+        final progress = _turn!.progress;
         record = ResponseRecord(
           prompt: input,
-          output: '',
-          responseId: '',
-          sessionId: '',
-          status: _stopRequested!,
+          output: progress.text,
+          responseId: progress.responseId,
+          sessionId: progress.sessionId,
+          status: _stopRequested ?? TurnStatus.failed,
         );
-      } else {
-        _turn = service.startTurn(
-          server,
-          ResponseDraft(
-            input: input,
-            harnessId: thread?.serverHarnessId ?? harness.id,
-            previousResponseId: thread?.lastResponseId,
-            model: model,
-          ),
-        );
-        try {
-          record = await _turn!.run(
-            onProgress: (progress) {
-              if (!_disposed) {
-                ref.read(liveTurnProvider.notifier).state = LiveTurn(
-                  input: input,
-                  progress: progress,
-                  stopping: _stopRequested != null,
-                );
-              }
-            },
-          );
-        } catch (error) {
-          final progress = _turn!.progress;
-          record = ResponseRecord(
-            prompt: input,
-            output: progress.text,
-            responseId: progress.responseId,
-            sessionId: progress.sessionId,
-            status: _stopRequested ?? TurnStatus.failed,
-          );
-          if (_stopRequested == null) failure = error;
-        }
+        if (_stopRequested == null) failure = error;
       }
       if (_disposed) return;
       if (record.status == TurnStatus.serverContinuing &&
@@ -175,14 +203,18 @@ class TaskRunner {
               harness: harness,
               prompt: input,
               record: record,
+              attachments: uploaded,
             )
-          : thread.appendTurn(input, record);
+          : thread.appendTurn(input, record, attachments: uploaded);
       ref.read(threadProvider.notifier).state = updated;
+      submissionRecorded = true;
       ref.read(liveTurnProvider.notifier).state = null;
       ref.read(unsavedThreadProvider.notifier).state = updated;
       await savePending();
       if (failure != null) throw failure;
     } finally {
+      _upload?.cancel();
+      _upload = null;
       _turn = null;
       _server = null;
       _linkedSessionId = null;
@@ -191,6 +223,12 @@ class TaskRunner {
         ref.read(liveTurnProvider.notifier).state = null;
         ref.read(taskBusyProvider.notifier).state = false;
       }
+    }
+  }
+
+  void _checkBeforeTurn() {
+    if (_disposed || _stopRequested != null) {
+      throw const AppError('Submission cancelled. Draft kept for retry.');
     }
   }
 
@@ -206,12 +244,14 @@ class TaskRunner {
       return;
     }
     _stopRequested = status;
+    _upload?.cancel();
     final live = ref.read(liveTurnProvider);
     if (live != null) {
       ref.read(liveTurnProvider.notifier).state = LiveTurn(
         input: live.input,
         progress: live.progress,
         stopping: true,
+        attachments: live.attachments,
       );
     }
     final turn = _turn;
@@ -248,6 +288,7 @@ class TaskRunner {
 
   void dispose() {
     _disposed = true;
+    _upload?.cancel();
     unawaited(_turn?.stop(TurnStatus.interrupted) ?? Future<void>.value());
   }
 }

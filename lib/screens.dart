@@ -184,10 +184,84 @@ class _TasksScreenState extends ConsumerState<TasksScreen> {
   String? _model;
   Object? _modelScope;
   bool _refreshing = false;
+  final _attachments = <PickedAttachment>[];
+  late final SessionFilePlatform _filePlatform;
+  bool _pickingAttachments = false;
+  bool _submitting = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _filePlatform = ref.read(sessionFilePlatformProvider);
+  }
+
+  Future<void> _discardAttachments(List<PickedAttachment> files) async {
+    if (files.isEmpty) return;
+    try {
+      await _filePlatform.discardAttachments(files);
+    } catch (error) {
+      if (mounted) showMessage(ref, error);
+    }
+  }
+
+  Future<void> _pickAttachments() async {
+    final thread = ref.read(threadProvider);
+    if (_pickingAttachments ||
+        _submitting ||
+        _refreshing ||
+        thread?.serverSessionId == null ||
+        _conversationBlocked(ref) ||
+        thread!.hasServerContinuing) {
+      return;
+    }
+    setState(() => _pickingAttachments = true);
+    try {
+      final picked = await _filePlatform.pickAttachments();
+      if (!mounted ||
+          ref.read(threadProvider)?.id != thread.id ||
+          _conversationBlocked(ref)) {
+        await _discardAttachments(picked);
+        return;
+      }
+      setState(() => _attachments.addAll(picked));
+    } catch (error) {
+      if (mounted) showMessage(ref, error);
+    } finally {
+      if (mounted) setState(() => _pickingAttachments = false);
+    }
+  }
+
+  Future<void> _submit() async {
+    if (_submitting || _pickingAttachments) return;
+    final runner = ref.read(taskRunnerProvider);
+    final messenger = ref.read(appScaffoldMessengerKeyProvider);
+    final picked = List<PickedAttachment>.of(_attachments);
+    setState(() => _submitting = true);
+    try {
+      await runner.submit(_prompt.text, model: _model, attachments: picked);
+    } catch (error) {
+      messenger.currentState?.showSnackBar(SnackBar(content: Text('$error')));
+    } finally {
+      final recorded = runner.submissionRecorded;
+      if (mounted) {
+        setState(() {
+          _submitting = false;
+          if (recorded) {
+            _attachments.clear();
+            _prompt.clear();
+          }
+        });
+      }
+      if (!mounted || recorded) await _discardAttachments(picked);
+    }
+  }
 
   @override
   void dispose() {
     _prompt.dispose();
+    if (!_submitting) {
+      unawaited(_discardAttachments(List<PickedAttachment>.of(_attachments)));
+    }
     super.dispose();
   }
 
@@ -269,6 +343,10 @@ class _TasksScreenState extends ConsumerState<TasksScreen> {
     if (_modelScope != scope) {
       _modelScope = scope;
       _model = null;
+      if (!_submitting) {
+        unawaited(_discardAttachments(List<PickedAttachment>.of(_attachments)));
+      }
+      _attachments.clear();
     }
     final busy = ref.watch(taskBusyProvider);
     final unsaved = ref.watch(unsavedThreadProvider) != null;
@@ -279,7 +357,14 @@ class _TasksScreenState extends ConsumerState<TasksScreen> {
           'in_progress',
         }.contains(thread?.serverSessionStatus?.toLowerCase());
     final continuing = thread?.hasServerContinuing ?? false;
-    final blocked = busy || unsaved || running || continuing || _refreshing;
+    final blocked =
+        busy ||
+        unsaved ||
+        running ||
+        continuing ||
+        _refreshing ||
+        _pickingAttachments ||
+        _submitting;
     final hasLiveTurn = ref.watch(
       liveTurnProvider.select((turn) => turn != null),
     );
@@ -328,6 +413,55 @@ class _TasksScreenState extends ConsumerState<TasksScreen> {
                     },
                   ),
                 ],
+                Row(
+                  children: [
+                    IconButton(
+                      tooltip: thread?.serverSessionId == null
+                          ? 'attachments need a server session'
+                          : 'Attach files',
+                      icon: const Icon(Icons.attach_file),
+                      onPressed: blocked || thread?.serverSessionId == null
+                          ? null
+                          : _pickAttachments,
+                    ),
+                    if (_pickingAttachments)
+                      const Flexible(
+                        child: Text(
+                          'Picking attachments…',
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                    if (thread?.serverSessionId != null) ...[
+                      TextButton.icon(
+                        onPressed: () => showSessionFiles(ref, thread!),
+                        icon: const Icon(Icons.folder_open),
+                        label: const Text('Files'),
+                      ),
+                      const Spacer(),
+                      SessionActionsMenu(thread: thread!),
+                    ],
+                  ],
+                ),
+                if (_attachments.isNotEmpty)
+                  Wrap(
+                    spacing: 6,
+                    children: [
+                      for (final attachment in _attachments)
+                        InputChip(
+                          label: Text(attachment.name),
+                          tooltip: '${attachment.size} bytes',
+                          avatar: const Icon(Icons.attach_file),
+                          onDeleted: blocked
+                              ? null
+                              : () {
+                                  setState(
+                                    () => _attachments.remove(attachment),
+                                  );
+                                  unawaited(_discardAttachments([attachment]));
+                                },
+                        ),
+                    ],
+                  ),
                 ActionChip(
                   avatar: const Icon(Icons.tune),
                   label: Text('Model: ${_model ?? 'Harness default'}'),
@@ -346,25 +480,7 @@ class _TasksScreenState extends ConsumerState<TasksScreen> {
                   spacing: 12,
                   children: [
                     FilledButton(
-                      onPressed: blocked
-                          ? null
-                          : () async {
-                              final runner = ref.read(taskRunnerProvider);
-                              final messenger = ref.read(
-                                appScaffoldMessengerKeyProvider,
-                              );
-                              try {
-                                await runner.submit(
-                                  _prompt.text,
-                                  model: _model,
-                                );
-                                if (mounted) _prompt.clear();
-                              } catch (error) {
-                                messenger.currentState?.showSnackBar(
-                                  SnackBar(content: Text('$error')),
-                                );
-                              }
-                            },
+                      onPressed: blocked ? null : _submit,
                       child: Text(
                         busy
                             ? 'Working…'
@@ -429,6 +545,18 @@ class _TasksScreenState extends ConsumerState<TasksScreen> {
                         style: Theme.of(context).textTheme.labelLarge,
                       ),
                       MessageContent(role: message.role, text: message.text),
+                      if (message.attachments.isNotEmpty)
+                        AttachmentChips(attachments: message.attachments),
+                      if (thread?.serverSessionId != null &&
+                          message.role == 'assistant' &&
+                          (message.status == TurnStatus.failed ||
+                              message.status == TurnStatus.cancelled))
+                        TextButton.icon(
+                          onPressed: () =>
+                              showSessionFiles(ref, thread!, changed: true),
+                          icon: const Icon(Icons.folder_open),
+                          label: const Text('View files'),
+                        ),
                       if (message.role == 'assistant')
                         if (message.status == TurnStatus.serverContinuing)
                           const Chip(
@@ -476,6 +604,8 @@ class ActiveTurnCard extends ConsumerWidget {
           children: [
             Text('user', style: Theme.of(context).textTheme.labelLarge),
             MessageContent(role: 'user', text: turn.input),
+            if (turn.attachments.isNotEmpty)
+              AttachmentChips(attachments: turn.attachments),
             const Divider(),
             Text(turn.stopping ? 'Stopping…' : 'assistant · running'),
             MessageContent(role: 'assistant', text: turn.progress.text),
@@ -485,6 +615,26 @@ class ActiveTurnCard extends ConsumerWidget {
       ),
     );
   }
+}
+
+class AttachmentChips extends StatelessWidget {
+  const AttachmentChips({super.key, required this.attachments});
+  final List<MessageAttachment> attachments;
+
+  @override
+  Widget build(BuildContext context) => Wrap(
+    spacing: 6,
+    children: [
+      for (final attachment in attachments)
+        Tooltip(
+          message: '${attachment.bytes} bytes · ${attachment.id}',
+          child: Chip(
+            avatar: const Icon(Icons.attach_file, size: 16),
+            label: Text(attachment.name),
+          ),
+        ),
+    ],
+  );
 }
 
 class StopTurnButton extends ConsumerWidget {

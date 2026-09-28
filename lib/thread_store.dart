@@ -2,7 +2,7 @@ part of 'main.dart';
 
 @immutable
 class ThreadMessage {
-  const ThreadMessage({
+  ThreadMessage({
     required this.role,
     required this.text,
     this.responseId,
@@ -11,7 +11,8 @@ class ThreadMessage {
     this.usage,
     this.error,
     required this.createdAt,
-  });
+    List<MessageAttachment> attachments = const [],
+  }) : attachments = List.unmodifiable(attachments);
 
   final String role;
   final String text;
@@ -21,6 +22,7 @@ class ThreadMessage {
   final TokenUsage? usage;
   final String? error;
   final DateTime createdAt;
+  final List<MessageAttachment> attachments;
 
   factory ThreadMessage.fromJson(Map<String, dynamic> json) {
     final role = json['role'] as String? ?? 'unknown';
@@ -37,6 +39,12 @@ class ThreadMessage {
           : TokenUsage.fromJson(json['usage'] as Map<String, dynamic>),
       error: json['error'] as String?,
       createdAt: DateTime.parse(json['createdAt'] as String),
+      attachments: (json['attachments'] as List<dynamic>? ?? const [])
+          .map(
+            (value) =>
+                MessageAttachment.fromJson(value as Map<String, dynamic>),
+          )
+          .toList(),
     );
   }
 
@@ -49,6 +57,10 @@ class ThreadMessage {
     'usage': usage?.toJson(),
     'error': error,
     'createdAt': createdAt.toUtc().toIso8601String(),
+    if (attachments.isNotEmpty)
+      'attachments': attachments
+          .map((attachment) => attachment.toJson())
+          .toList(),
   };
 }
 
@@ -132,9 +144,16 @@ class ConversationThread {
     required Harness harness,
     required String prompt,
     required ResponseRecord record,
+    List<MessageAttachment> attachments = const [],
   }) {
     final now = DateTime.now().toUtc();
-    final title = String.fromCharCodes(prompt.trim().runes.take(80));
+    final title = String.fromCharCodes(
+      (prompt.trim().isEmpty && attachments.isNotEmpty
+              ? attachments.first.name
+              : prompt.trim())
+          .runes
+          .take(80),
+    );
     return ConversationThread(
       id: newLocalId(),
       title: title,
@@ -147,7 +166,12 @@ class ConversationThread {
       createdAt: now,
       updatedAt: now,
       messages: [
-        ThreadMessage(role: 'user', text: prompt, createdAt: now),
+        ThreadMessage(
+          role: 'user',
+          text: prompt,
+          createdAt: now,
+          attachments: attachments,
+        ),
         ThreadMessage(
           role: 'assistant',
           text: record.output,
@@ -164,7 +188,11 @@ class ConversationThread {
     );
   }
 
-  ConversationThread appendTurn(String prompt, ResponseRecord record) {
+  ConversationThread appendTurn(
+    String prompt,
+    ResponseRecord record, {
+    List<MessageAttachment> attachments = const [],
+  }) {
     final now = DateTime.now().toUtc();
     return ConversationThread(
       id: id,
@@ -191,7 +219,12 @@ class ConversationThread {
       updatedAt: now,
       messages: [
         ...messages,
-        ThreadMessage(role: 'user', text: prompt, createdAt: now),
+        ThreadMessage(
+          role: 'user',
+          text: prompt,
+          createdAt: now,
+          attachments: attachments,
+        ),
         ThreadMessage(
           role: 'assistant',
           text: record.output,
@@ -455,6 +488,7 @@ class ThreadStore {
         usage: usage,
         error: error,
         createdAt: previous.createdAt,
+        attachments: previous.attachments,
       );
       // A late result can settle its own row, never a newer turn or its pointer.
       final updateSession =
@@ -529,17 +563,26 @@ class ThreadStore {
       final matching = <(String, String), List<ThreadMessage>>{};
       for (final row in local.reversed) {
         matching.putIfAbsent((row.role, row.text), () => []).add(row);
+        if (row.role == 'user' && row.attachments.isNotEmpty) {
+          final input = buildAttachmentInput(row.text, row.attachments);
+          matching.putIfAbsent((row.role, input), () => []).add(row);
+        }
       }
       // The server sequence is authoritative, but exact rows retain local
       // response IDs, timestamps, usage, and interruption metadata.
+      final retained = <ThreadMessage>{};
       messages = imported.map((row) {
         final matches = matching[(row.role, row.text)];
-        return matches == null || matches.isEmpty ? row : matches.removeLast();
+        while (matches != null && matches.isNotEmpty) {
+          final match = matches.removeLast();
+          if (retained.add(match)) return match;
+        }
+        return row;
       }).toList();
       final remotePairs = <(String, String), int>{};
-      for (var i = 1; i < imported.length; i++) {
-        if (imported[i - 1].role == 'user' && imported[i].role == 'assistant') {
-          final pair = (imported[i - 1].text, imported[i].text);
+      for (var i = 1; i < messages.length; i++) {
+        if (messages[i - 1].role == 'user' && messages[i].role == 'assistant') {
+          final pair = (messages[i - 1].text, messages[i].text);
           remotePairs.update(pair, (count) => count + 1, ifAbsent: () => 1);
         }
       }

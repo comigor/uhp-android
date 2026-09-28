@@ -209,9 +209,9 @@ void main() {
           ThreadMessage(role: 'assistant', text: history, createdAt: now),
         ],
       );
-      container.read(liveTurnProvider.notifier).state = const LiveTurn(
+      container.read(liveTurnProvider.notifier).state = LiveTurn(
         input: '**Plain prompt**',
-        progress: TurnProgress(text: '**Live**'),
+        progress: const TurnProgress(text: '**Live**'),
       );
       await tester.pumpWidget(
         UncontrolledProviderScope(

@@ -3,6 +3,7 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:http/http.dart' as http;
 import 'package:path_provider/path_provider.dart';
@@ -25,6 +26,11 @@ part 'app_preferences.dart';
 part 'settings_screen.dart';
 part 'app_navigation.dart';
 part 'thread_management.dart';
+part 'session_file_platform.dart';
+part 'session_files.dart';
+part 'session_files_ui.dart';
+part 'attachments.dart';
+part 'session_actions.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -201,6 +207,7 @@ final selectedServerProvider = StateProvider<ServerConfig?>((ref) => null);
 final appDestinationProvider = StateProvider<AppDestination>(
   (ref) => AppDestination.feed,
 );
+final sessionFeedRevisionProvider = StateProvider<int>((ref) => 0);
 final selectedHarnessProvider = StateProvider<Harness?>((ref) => null);
 final harnessesProvider =
     StateNotifierProvider<HarnessesController, AsyncValue<List<Harness>>>((
