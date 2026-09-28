@@ -31,6 +31,7 @@ part 'session_files.dart';
 part 'session_files_ui.dart';
 part 'attachments.dart';
 part 'session_actions.dart';
+part 'feed_management.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -497,6 +498,16 @@ class _AppShellState extends ConsumerState<AppShell>
         _selectProfile(profiles.requireValue);
       }
     });
+    ref.listenManual(selectedServerProvider, (previous, next) {
+      if (!identical(previous, next)) {
+        ref.read(feedSelectionProvider.notifier).clear();
+      }
+    });
+    ref.listenManual(appDestinationProvider, (_, next) {
+      if (next != AppDestination.feed) {
+        ref.read(feedSelectionProvider.notifier).clear();
+      }
+    });
     unawaited(Future<void>.microtask(_restore));
   }
 
@@ -600,46 +611,68 @@ class _AppShellState extends ConsumerState<AppShell>
   @override
   Widget build(BuildContext context) {
     final destination = ref.watch(appDestinationProvider);
+    final selection = ref.watch(feedSelectionProvider);
+    final selecting =
+        destination == AppDestination.feed && selection.isNotEmpty;
+    final mutating = ref.watch(feedMutationBusyProvider);
     final canReturnToChat =
         ref.watch(threadProvider.select((thread) => thread != null)) ||
         ref.watch(liveTurnProvider.select((turn) => turn != null));
     return PopScope(
-      canPop: destination == AppDestination.feed,
+      canPop: destination == AppDestination.feed && !selecting && !mutating,
       onPopInvokedWithResult: (didPop, _) {
-        if (!didPop) {
+        if (!didPop && !mutating) {
+          if (selecting) {
+            ref.read(feedSelectionProvider.notifier).clear();
+            return;
+          }
           ref.read(appDestinationProvider.notifier).state = AppDestination.feed;
         }
       },
       child: Scaffold(
         appBar: AppBar(
-          leading: destination == AppDestination.feed
+          leading: selecting
+              ? IconButton(
+                  tooltip: 'Cancel selection',
+                  icon: const Icon(Icons.close),
+                  onPressed: mutating
+                      ? null
+                      : () => ref.read(feedSelectionProvider.notifier).clear(),
+                )
+              : destination == AppDestination.feed
               ? null
               : BackButton(
-                  onPressed: () =>
-                      ref.read(appDestinationProvider.notifier).state =
-                          AppDestination.feed,
+                  onPressed: mutating
+                      ? null
+                      : () => ref.read(appDestinationProvider.notifier).state =
+                            AppDestination.feed,
                 ),
           title: Text(switch (destination) {
-            AppDestination.feed => 'Sessions',
+            AppDestination.feed =>
+              selecting ? '${selection.length} selected' : 'Sessions',
             AppDestination.chat => 'Chat',
             AppDestination.settings => 'Settings',
           }),
           actions: [
-            if (destination == AppDestination.feed && canReturnToChat)
+            if (destination == AppDestination.feed &&
+                canReturnToChat &&
+                !selecting)
               IconButton(
                 tooltip: 'Current chat',
                 icon: const Icon(Icons.chat_bubble_outline),
-                onPressed: () =>
-                    ref.read(appDestinationProvider.notifier).state =
-                        AppDestination.chat,
+                onPressed: mutating
+                    ? null
+                    : () => ref.read(appDestinationProvider.notifier).state =
+                          AppDestination.chat,
               ),
-            if (destination != AppDestination.settings)
+            if (destination != AppDestination.settings && !selecting)
               IconButton(
                 tooltip: 'Settings',
                 icon: const Icon(Icons.settings_outlined),
-                onPressed: () =>
-                    ref.read(appDestinationProvider.notifier).state =
-                        AppDestination.settings,
+                onPressed: mutating
+                    ? null
+                    : () => ref.read(appDestinationProvider.notifier).state =
+                          AppDestination.settings,
               ),
           ],
         ),

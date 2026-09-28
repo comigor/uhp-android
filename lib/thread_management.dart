@@ -77,7 +77,11 @@ class _HistoryScreenState extends ConsumerState<HistoryScreen> {
   Widget build(BuildContext context) {
     final history = ref.watch(historyProvider);
     final blocked =
-        ref.watch(taskBusyProvider) || ref.watch(unsavedThreadProvider) != null;
+        ref.watch(taskBusyProvider) ||
+        ref.watch(unsavedThreadProvider) != null ||
+        ref.watch(feedMutationBusyProvider);
+    final selection = ref.watch(feedSelectionProvider);
+    final selecting = selection.isNotEmpty;
     return history.when(
       loading: () => const Center(child: CircularProgressIndicator()),
       error: (error, _) => Center(child: Text('Cannot load history: $error')),
@@ -86,42 +90,116 @@ class _HistoryScreenState extends ConsumerState<HistoryScreen> {
             ? threads
             : threads.where((thread) => !thread.archived).toList();
         final rowCount = visible.isEmpty ? 1 : visible.length;
-        return ListView.builder(
-          itemCount: rowCount + 1,
-          itemBuilder: (context, index) {
-            if (index == rowCount) {
-              return SwitchListTile(
-                title: const Text('Show archived'),
-                value: _showArchived,
-                onChanged: (value) => setState(() => _showArchived = value),
-              );
-            }
-            if (visible.isEmpty) {
-              return const Padding(
-                padding: EdgeInsets.all(24),
-                child: Text('No saved conversations.'),
-              );
-            }
-            final summary = visible[index];
-            return Opacity(
-              opacity: summary.archived ? 0.55 : 1,
-              child: ListTile(
-                key: ValueKey('thread-${summary.id}'),
-                title: Text(summary.title),
-                subtitle: Text(
-                  '${summary.archived ? 'Archived · ' : ''}${summary.harnessName} · ${relativeTime(summary.updatedAt)}',
-                ),
-                onTap: blocked ? null : () => _open(summary),
-                onLongPress: () => _manage(summary),
-                trailing: IconButton(
-                  key: ValueKey('thread-actions-${summary.id}'),
-                  tooltip: 'Conversation actions',
-                  icon: const Icon(Icons.more_vert),
-                  onPressed: () => _manage(summary),
-                ),
+        return Column(
+          children: [
+            if (selecting)
+              FeedSelectionBar(
+                onSelectAll: blocked
+                    ? null
+                    : () => ref
+                          .read(feedSelectionProvider.notifier)
+                          .selectAll(visible.map(FeedTarget.local)),
               ),
-            );
-          },
+            Expanded(
+              child: ListView.builder(
+                itemCount: rowCount + 1,
+                itemBuilder: (context, index) {
+                  if (index == rowCount) {
+                    return SwitchListTile(
+                      title: const Text('Show archived'),
+                      value: _showArchived,
+                      onChanged: (value) =>
+                          setState(() => _showArchived = value),
+                    );
+                  }
+                  if (visible.isEmpty) {
+                    return const Padding(
+                      padding: EdgeInsets.all(24),
+                      child: Text('No saved conversations.'),
+                    );
+                  }
+                  final summary = visible[index];
+                  final target = FeedTarget.local(summary);
+                  final locked = blocked || target.locked;
+                  void toggle() {
+                    if (!_conversationBlocked(ref) && !target.locked) {
+                      ref.read(feedSelectionProvider.notifier).toggle(target);
+                    }
+                  }
+
+                  return Dismissible(
+                    key: ValueKey('swipe-${target.key}'),
+                    direction: selecting || locked
+                        ? DismissDirection.none
+                        : summary.archived
+                        ? DismissDirection.endToStart
+                        : DismissDirection.startToEnd,
+                    background: Container(
+                      color: Theme.of(context).colorScheme.secondaryContainer,
+                      alignment: summary.archived
+                          ? AlignmentDirectional.centerEnd
+                          : AlignmentDirectional.centerStart,
+                      padding: const EdgeInsets.symmetric(horizontal: 24),
+                      child: Icon(
+                        summary.archived
+                            ? Icons.unarchive_outlined
+                            : Icons.archive_outlined,
+                      ),
+                    ),
+                    confirmDismiss: (_) async {
+                      if (_conversationBlocked(ref) ||
+                          ref.read(feedSelectionProvider).isNotEmpty ||
+                          target.locked) {
+                        return false;
+                      }
+                      await manageFeedBatch(
+                        ref,
+                        summary.archived
+                            ? FeedBatchAction.unarchive
+                            : FeedBatchAction.archive,
+                        [target],
+                      );
+                      return false;
+                    },
+                    child: Opacity(
+                      opacity: summary.archived ? 0.55 : 1,
+                      child: ListTile(
+                        key: ValueKey('thread-${summary.id}'),
+                        enabled: !blocked,
+                        selected: selection.containsKey(target.key),
+                        leading: selecting
+                            ? Checkbox(
+                                value: selection.containsKey(target.key),
+                                onChanged: locked ? null : (_) => toggle(),
+                              )
+                            : null,
+                        title: Text(summary.title),
+                        subtitle: Text(
+                          '${summary.archived ? 'Archived · ' : ''}${summary.harnessName} · ${relativeTime(summary.updatedAt)}',
+                        ),
+                        trailing: selecting
+                            ? null
+                            : IconButton(
+                                key: ValueKey('thread-actions-${summary.id}'),
+                                tooltip: 'Conversation options',
+                                icon: const Icon(Icons.more_vert),
+                                onPressed: locked
+                                    ? null
+                                    : () => _manage(summary),
+                              ),
+                        onLongPress: locked ? null : toggle,
+                        onTap: blocked
+                            ? null
+                            : selecting
+                            ? (target.locked ? null : toggle)
+                            : () => _open(summary),
+                      ),
+                    ),
+                  );
+                },
+              ),
+            ),
+          ],
         );
       },
     );

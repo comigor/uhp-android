@@ -148,26 +148,55 @@ class AppPreferencesController extends AsyncNotifier<AppPreferences> {
         current.copyWith(feedFilter: _isFeedFilter(value) ? value : 'all'),
   );
 
-  Future<void> hideSession(String serverId, String sessionId, String title) =>
-      _mutate(
-        (current) => current.copyWith(
-          hiddenSessions: {
-            ...current.hiddenSessions,
-            serverId: {...?current.hiddenSessions[serverId], sessionId: title},
-          },
-        ),
-      );
+  Future<void> hideSession(
+    String serverId,
+    String sessionId,
+    String title,
+  ) async {
+    await patchHiddenSessions({
+      serverId: {sessionId: title},
+    });
+  }
 
-  Future<void> restoreSession(String serverId, String sessionId) =>
-      _mutate((current) {
-        final sessions = {...?current.hiddenSessions[serverId]}
-          ..remove(sessionId);
-        final hidden = {...current.hiddenSessions};
-        if (sessions.isEmpty) {
-          hidden.remove(serverId);
-        } else {
-          hidden[serverId] = sessions;
+  Future<void> restoreSession(String serverId, String sessionId) async {
+    await patchHiddenSessions({
+      serverId: {sessionId: null},
+    });
+  }
+
+  // Null removes only that ID. The returned patch restores exactly the entries
+  // touched by this operation, without reverting unrelated preference changes.
+  Future<Map<String, Map<String, String?>>> patchHiddenSessions(
+    Map<String, Map<String, String?>> patch, {
+    void Function()? beforeWrite,
+  }) async {
+    final changes = {
+      for (final entry in patch.entries) entry.key: {...entry.value},
+    };
+    final previous = <String, Map<String, String?>>{};
+    await _mutate((current) {
+      beforeWrite?.call();
+      final hidden = {...current.hiddenSessions};
+      for (final server in changes.entries) {
+        final sessions = {...?hidden[server.key]};
+        final old = <String, String?>{};
+        for (final session in server.value.entries) {
+          old[session.key] = sessions[session.key];
+          if (session.value == null) {
+            sessions.remove(session.key);
+          } else {
+            sessions[session.key] = session.value!;
+          }
         }
-        return current.copyWith(hiddenSessions: hidden);
-      });
+        previous[server.key] = old;
+        if (sessions.isEmpty) {
+          hidden.remove(server.key);
+        } else {
+          hidden[server.key] = sessions;
+        }
+      }
+      return current.copyWith(hiddenSessions: hidden);
+    });
+    return previous;
+  }
 }

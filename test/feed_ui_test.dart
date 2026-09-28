@@ -243,7 +243,7 @@ void main() {
 
   for (final remembered in <String?>[null, 'h2', 'removed-harness']) {
     testWidgets(
-      'New chat uses remembered harness $remembered or the first default',
+      'New chat confirms remembered harness $remembered or the first default',
       (tester) async {
         final submitted = <Map<String, dynamic>>[];
         final container = await _mount(tester, (request) async {
@@ -266,6 +266,9 @@ void main() {
               : _json({'sessions': []});
         }, preferences: AppPreferences(lastHarnessIds: {'first': ?remembered}));
         await tester.tap(find.text('New chat'));
+        await tester.pumpAndSettle();
+        expect(find.text('Choose a harness'), findsOneWidget);
+        await tester.tap(find.text('Start chat'));
         await tester.pumpAndSettle();
         final expected = remembered == 'h2' ? 'h2' : 'h1';
         expect(find.text('Chat'), findsOneWidget);

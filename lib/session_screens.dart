@@ -1,7 +1,9 @@
 part of 'main.dart';
 
 bool _conversationBlocked(WidgetRef ref) =>
-    ref.read(taskBusyProvider) || ref.read(unsavedThreadProvider) != null;
+    ref.read(taskBusyProvider) ||
+    ref.read(unsavedThreadProvider) != null ||
+    ref.read(feedMutationBusyProvider);
 
 const _sessionManagementBlockedReason =
     'Finish or save the current turn before hiding or restoring sessions.';
@@ -91,6 +93,7 @@ class _ServerSessionsState extends ConsumerState<_ServerSessions> {
   Object? _newChatError;
   bool _loading = false;
   bool _opening = false;
+  bool _startingChat = false;
   int _generation = 0;
 
   bool get _onDevice => widget.filter == 'on-device';
@@ -256,10 +259,48 @@ class _ServerSessionsState extends ConsumerState<_ServerSessions> {
     }
   }
 
+  Future<void> _selectAllFiltered() async {
+    final server = widget.server;
+    if (server == null || _opening || _loading || _conversationBlocked(ref)) {
+      return;
+    }
+    setState(() => _opening = true);
+    try {
+      final cursors = <String>{};
+      while (_cursor != null) {
+        if (!cursors.add(_cursor!)) {
+          throw const AppError(
+            'The server repeated a pagination cursor. Refresh and try again.',
+          );
+        }
+        await _load(more: true);
+        if (!_current || _conversationBlocked(ref)) return;
+        if (_error != null) throw _error!;
+      }
+      if (!_current || _conversationBlocked(ref)) return;
+      final hidden = ref
+          .read(appPreferencesProvider)
+          .valueOrNull
+          ?.hiddenSessions[server.id];
+      ref
+          .read(feedSelectionProvider.notifier)
+          .selectAll(
+            _sessions
+                .where((session) => !(hidden?.containsKey(session.id) ?? false))
+                .map((session) => FeedTarget.remote(server, session)),
+          );
+    } catch (error) {
+      if (mounted) showMessage(ref, error);
+    } finally {
+      if (mounted) setState(() => _opening = false);
+    }
+  }
+
   Future<void> _newChat() async {
     if (_opening || _conversationBlocked(ref)) return;
     setState(() {
       _opening = true;
+      _startingChat = true;
       _newChatError = null;
     });
     try {
@@ -267,7 +308,12 @@ class _ServerSessionsState extends ConsumerState<_ServerSessions> {
     } catch (error) {
       if (_current) setState(() => _newChatError = error);
     } finally {
-      if (mounted) setState(() => _opening = false);
+      if (mounted) {
+        setState(() {
+          _opening = false;
+          _startingChat = false;
+        });
+      }
     }
   }
 
@@ -283,7 +329,9 @@ class _ServerSessionsState extends ConsumerState<_ServerSessions> {
   Widget build(BuildContext context) {
     final harnesses = ref.watch(harnessesProvider);
     final conversationBlocked =
-        ref.watch(taskBusyProvider) || ref.watch(unsavedThreadProvider) != null;
+        ref.watch(taskBusyProvider) ||
+        ref.watch(unsavedThreadProvider) != null ||
+        ref.watch(feedMutationBusyProvider);
     final blocked = conversationBlocked || _opening;
     final error = _error ?? harnesses.error;
     final hiddenSessions = ref.watch(
@@ -295,6 +343,8 @@ class _ServerSessionsState extends ConsumerState<_ServerSessions> {
     final visibleSessions = _sessions
         .where((session) => !(hiddenSessions?.containsKey(session.id) ?? false))
         .toList();
+    final selection = ref.watch(feedSelectionProvider);
+    final selecting = selection.isNotEmpty;
     return Column(
       children: [
         Padding(
@@ -313,7 +363,7 @@ class _ServerSessionsState extends ConsumerState<_ServerSessions> {
                 icon: const Icon(Icons.refresh),
               ),
               FilledButton.icon(
-                onPressed: blocked ? null : _newChat,
+                onPressed: blocked || selecting ? null : _newChat,
                 icon: const Icon(Icons.add),
                 label: const Text('New chat'),
               ),
@@ -356,6 +406,10 @@ class _ServerSessionsState extends ConsumerState<_ServerSessions> {
             ],
           ),
         ),
+        if (selecting && !_onDevice)
+          FeedSelectionBar(
+            onSelectAll: blocked || _loading ? null : _selectAllFiltered,
+          ),
         if (error != null) _FeedErrorCard(error: error, onRetry: _refresh),
         if (_newChatError != null)
           Padding(
@@ -378,7 +432,8 @@ class _ServerSessionsState extends ConsumerState<_ServerSessions> {
               ],
             ),
           ),
-        if (_loading || _opening) const LinearProgressIndicator(),
+        if (_loading || (_opening && !_startingChat))
+          const LinearProgressIndicator(),
         if (conversationBlocked)
           const Padding(
             padding: EdgeInsets.symmetric(horizontal: 16),
@@ -423,35 +478,84 @@ class _ServerSessionsState extends ConsumerState<_ServerSessions> {
                         );
                       }
                       final session = visibleSessions[index];
-                      return ListTile(
-                        title: Text(
-                          session.title.isEmpty ? session.id : session.title,
+                      final target = FeedTarget.remote(widget.server!, session);
+                      final locked = blocked || target.locked;
+                      void toggle() {
+                        if (!_conversationBlocked(ref) &&
+                            !target.locked &&
+                            !_opening) {
+                          ref
+                              .read(feedSelectionProvider.notifier)
+                              .toggle(target);
+                        }
+                      }
+
+                      return Dismissible(
+                        key: ValueKey('swipe-${target.key}'),
+                        direction: selecting || locked
+                            ? DismissDirection.none
+                            : DismissDirection.startToEnd,
+                        background: Container(
+                          color: Theme.of(context)
+                              .colorScheme
+                              .secondaryContainer,
+                          alignment: AlignmentDirectional.centerStart,
+                          padding: const EdgeInsets.symmetric(horizontal: 24),
+                          child: const Icon(Icons.visibility_off_outlined),
                         ),
-                        subtitle: Text(
-                          [
-                            _harnessName(session.harnessId),
-                            if (session.model.isNotEmpty) session.model,
-                            if (session.updatedAt != null)
-                              relativeTime(session.updatedAt!),
-                          ].where((value) => value.isNotEmpty).join(' · '),
+                        confirmDismiss: (_) async {
+                          if (_conversationBlocked(ref) ||
+                              ref.read(feedSelectionProvider).isNotEmpty ||
+                              target.locked) {
+                            return false;
+                          }
+                          await manageFeedBatch(ref, FeedBatchAction.hide, [
+                            target,
+                          ]);
+                          return false;
+                        },
+                        child: ListTile(
+                          key: ValueKey('session-${session.id}'),
+                          enabled: !blocked,
+                          selected: selection.containsKey(target.key),
+                          leading: selecting
+                              ? Checkbox(
+                                  value: selection.containsKey(target.key),
+                                  onChanged: locked ? null : (_) => toggle(),
+                                )
+                              : null,
+                          title: Text(
+                            session.title.isEmpty ? session.id : session.title,
+                          ),
+                          subtitle: Text(
+                            [
+                              _harnessName(session.harnessId),
+                              if (session.model.isNotEmpty) session.model,
+                              if (session.updatedAt != null)
+                                relativeTime(session.updatedAt!),
+                            ].where((value) => value.isNotEmpty).join(' · '),
+                          ),
+                          trailing: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              _SessionStatus(status: session.status),
+                              if (!selecting)
+                                IconButton(
+                                  tooltip: 'Session options',
+                                  onPressed: locked
+                                      ? null
+                                      : () => _sessionActions(session),
+                                  icon: const Icon(Icons.more_vert),
+                                ),
+                            ],
+                          ),
+                          onLongPress: locked ? null : toggle,
+                          onTap: blocked
+                              ? null
+                              : selecting
+                              ? (target.locked ? null : toggle)
+                              : () => _open(session),
                         ),
-                        trailing: Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            _SessionStatus(status: session.status),
-                            IconButton(
-                              tooltip: 'Session options',
-                              onPressed: _opening
-                                  ? null
-                                  : () => _sessionActions(session),
-                              icon: const Icon(Icons.more_vert),
-                            ),
-                          ],
-                        ),
-                        onLongPress: _opening
-                            ? null
-                            : () => _sessionActions(session),
-                        onTap: blocked ? null : () => _open(session),
                       );
                     },
                   ),

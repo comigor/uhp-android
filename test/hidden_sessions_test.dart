@@ -249,7 +249,7 @@ void main() {
           }
         }
 
-        await tester.longPress(find.text(_title));
+        await tester.tap(find.byTooltip('Session options').first);
         await tester.pumpAndSettle();
         block(true);
         await tester.pumpAndSettle();

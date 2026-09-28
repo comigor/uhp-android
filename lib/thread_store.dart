@@ -106,6 +106,14 @@ class ConversationThread {
         message.status == TurnStatus.serverContinuing,
   );
 
+  bool get managementLocked =>
+      hasServerContinuing ||
+      messages.any((message) => message.status == TurnStatus.running) ||
+      const {
+        'running',
+        'in_progress',
+      }.contains(serverSessionStatus?.toLowerCase());
+
   String? get lastResponseId {
     if (serverSessionId != null) return serverLastResponseId;
     for (final message in messages.reversed) {
@@ -311,6 +319,7 @@ class ThreadSummary {
     required this.id,
     required this.title,
     this.archived = false,
+    this.managementLocked = false,
     required this.serverId,
     required this.harnessId,
     required this.harnessName,
@@ -322,6 +331,7 @@ class ThreadSummary {
   final String id;
   final String title;
   final bool archived;
+  final bool managementLocked;
   final String serverId;
   final String harnessId;
   final String harnessName;
@@ -333,6 +343,7 @@ class ThreadSummary {
     id: thread.id,
     title: thread.title,
     archived: thread.archived,
+    managementLocked: thread.managementLocked,
     serverId: thread.server.id,
     harnessId: thread.harnessId,
     harnessName: thread.harnessName,
@@ -348,6 +359,7 @@ class ThreadSummary {
       id: id,
       title: json['title'] as String,
       archived: json['archived'] == true,
+      managementLocked: json['managementLocked'] == true,
       serverId: json['serverId'] as String,
       harnessId: json['harnessId'] as String,
       harnessName: json['harnessName'] as String,
@@ -361,6 +373,7 @@ class ThreadSummary {
     'id': id,
     'title': title,
     'archived': archived,
+    'managementLocked': managementLocked,
     'serverId': serverId,
     'harnessId': harnessId,
     'harnessName': harnessName,
@@ -646,6 +659,52 @@ class ThreadStore {
     return _updateManagement(id, archived: archived);
   }
 
+  // The guard and legacy-state recheck run in the same queue as the write.
+  Future<ConversationThread?> mutateFeedThread(
+    String id,
+    FeedBatchAction action, {
+    required void Function(ConversationThread) beforeWrite,
+  }) {
+    _validateThreadId(id);
+    if (action == FeedBatchAction.hide) {
+      throw ArgumentError('Remote hiding is not a thread mutation.');
+    }
+    return _serialize(() async {
+      final directory = await _directory();
+      await _recover(directory);
+      final current = await _readThread(directory, id, strict: true);
+      if (current == null) {
+        throw const AppError(
+          'This conversation no longer exists or is malformed.',
+        );
+      }
+      beforeWrite(current);
+      if (current.managementLocked) {
+        throw const AppError(
+          'Wait for this turn to finish before managing this conversation.',
+        );
+      }
+      if (action == FeedBatchAction.delete) {
+        await _delete(directory, id);
+        return null;
+      }
+      final updated = current._withManagement(
+        archived: action == FeedBatchAction.archive,
+      );
+      if (updated.archived != current.archived) await _save(directory, updated);
+      return updated;
+    });
+  }
+
+  // A failed index commit can follow a successful data-file commit. Callers
+  // inspect the durable record to report that partial success truthfully.
+  Future<ConversationThread?> readForManagement(String id) {
+    _validateThreadId(id);
+    return _serialize(
+      () async => _readThread(await _directory(), id, strict: true),
+    );
+  }
+
   Future<ConversationThread?> _updateManagement(
     String id, {
     String? localTitleOverride,
@@ -699,12 +758,16 @@ class ThreadStore {
       final directory = await _directory();
       if (!await directory.exists()) return;
       await _recover(directory);
-      await _atomicWrite(_journal(directory), {'id': id});
-      final file = _threadFile(directory, id);
-      if (await file.exists()) await file.delete();
-      await _updateIndex(directory, id, null);
-      await _journal(directory).delete();
+      await _delete(directory, id);
     });
+  }
+
+  Future<void> _delete(Directory directory, String id) async {
+    await _atomicWrite(_journal(directory), {'id': id});
+    final file = _threadFile(directory, id);
+    if (await file.exists()) await file.delete();
+    await _updateIndex(directory, id, null);
+    await _journal(directory).delete();
   }
 
   File _threadFile(Directory directory, String id) =>
