@@ -38,6 +38,8 @@ class TaskRunner {
     String input, {
     String? model,
     List<PickedAttachment> attachments = const [],
+    ConversationThread? initialThread,
+    Future<ComposerDraftRollback?> Function()? onAccepted,
   }) {
     if (_submission != null) return _submission!;
     submissionRecorded = false;
@@ -49,7 +51,7 @@ class TaskRunner {
     if (input.trim().isEmpty && attachments.isEmpty) {
       return Future.error(const AppError('Enter a prompt first.'));
     }
-    final thread = ref.read(threadProvider);
+    final thread = ref.read(threadProvider) ?? initialThread;
     if (thread?.hasServerContinuing ?? false) {
       return Future.error(
         const AppError('Waiting for previous turn to finish on server.'),
@@ -79,6 +81,7 @@ class TaskRunner {
       harness,
       model,
       List.unmodifiable(attachments),
+      onAccepted,
     );
   }
 
@@ -89,11 +92,14 @@ class TaskRunner {
     Harness harness,
     String? model,
     List<PickedAttachment> attachments,
+    Future<ComposerDraftRollback?> Function()? onAccepted,
   ) async {
     ResponseRecord? record;
     Object? failure;
     List<MessageAttachment> uploaded = const [];
+    ComposerDraftRollback? rollbackDraft;
     try {
+      if (!server.hasApiKey) throw const AppError('API key required');
       final servers = await ref.read(serversProvider.future);
       if (!servers.any((s) => s.id == server.id)) {
         throw const AppError(
@@ -145,6 +151,10 @@ class TaskRunner {
         _upload = null;
       }
       _checkBeforeTurn();
+      // All validation and attachment preflight/upload have succeeded. Commit
+      // the composer clear now, not when the potentially long stream finishes.
+      if (onAccepted != null) rollbackDraft = await onAccepted();
+      _checkBeforeTurn();
       ref.read(liveTurnProvider.notifier).state = LiveTurn(
         input: input,
         attachments: uploaded,
@@ -159,6 +169,9 @@ class TaskRunner {
         ),
       );
       try {
+        // No await separates this point from dispatch; cancellation during the
+        // durable clear above still restores the submitted revision.
+        rollbackDraft = null;
         record = await _turn!.run(
           onProgress: (progress) {
             if (!_disposed) {
@@ -212,6 +225,9 @@ class TaskRunner {
       ref.read(unsavedThreadProvider.notifier).state = updated;
       await savePending();
       if (failure != null) throw failure;
+    } catch (_) {
+      if (rollbackDraft != null) await rollbackDraft();
+      rethrow;
     } finally {
       _upload?.cancel();
       _upload = null;

@@ -209,7 +209,18 @@ class ConversationThread {
     final now = DateTime.now().toUtc();
     return ConversationThread(
       id: id,
-      title: title,
+      title:
+          messages.isEmpty &&
+              serverSessionId == null &&
+              localTitleOverride == null
+          ? String.fromCharCodes(
+              (prompt.trim().isEmpty && attachments.isNotEmpty
+                      ? attachments.first.name
+                      : prompt.trim())
+                  .runes
+                  .take(80),
+            )
+          : title,
       archived: archived,
       localTitleOverride: localTitleOverride,
       server: server,
@@ -438,6 +449,55 @@ class ThreadStore {
   Future<ConversationThread?> read(String id) {
     _validateThreadId(id);
     return _serialize(() async => _readThread(await _directory(), id));
+  }
+
+  Future<String> readDraft(String id) {
+    _validateThreadId(id);
+    return _serialize(() async {
+      final directory = await _directory();
+      await _recover(directory);
+      if (!await _threadFile(directory, id).exists()) return '';
+      final file = _draftFile(directory, id);
+      if (!await file.exists()) return '';
+      final value = jsonDecode(await file.readAsString());
+      if (value is! Map || value['text'] is! String) {
+        throw const FormatException('Invalid saved composer draft.');
+      }
+      return value['text'] as String;
+    });
+  }
+
+  // Drafts have their own small atomic records. Transcript snapshots never
+  // contain draft state, so refresh, rename and late turns cannot overwrite it.
+  Future<void> saveDraft(
+    String id,
+    String text, {
+    ConversationThread? initialThread,
+  }) {
+    _validateThreadId(id);
+    if (initialThread != null && initialThread.id != id) {
+      throw ArgumentError('Draft and initial thread identifiers differ.');
+    }
+    return _serialize(() async {
+      final directory = await _directory();
+      await directory.create(recursive: true);
+      await _recover(directory);
+      if (!await _threadFile(directory, id).exists()) {
+        if (initialThread == null) {
+          throw const AppError(
+            'This conversation no longer exists. Draft not saved.',
+          );
+        }
+        await _save(directory, initialThread);
+      }
+      final file = _draftFile(directory, id);
+      if (text.isEmpty) {
+        if (await file.exists()) await file.delete();
+      } else {
+        await file.parent.create(recursive: true);
+        await _atomicWrite(file, {'text': text});
+      }
+    });
   }
 
   Future<List<ConversationThread>> continuingThreads() => _serialize(() async {
@@ -799,12 +859,17 @@ class ThreadStore {
     await _atomicWrite(_journal(directory), {'id': id});
     final file = _threadFile(directory, id);
     if (await file.exists()) await file.delete();
+    final draft = _draftFile(directory, id);
+    if (await draft.exists()) await draft.delete();
     await _updateIndex(directory, id, null);
     await _journal(directory).delete();
   }
 
   File _threadFile(Directory directory, String id) =>
       File('${directory.path}/$id.json');
+
+  File _draftFile(Directory directory, String id) =>
+      File('${directory.path}/drafts/$id.json');
 
   File _journal(Directory directory) => File('${directory.path}/.pending.json');
 
@@ -911,6 +976,10 @@ class ThreadStore {
       return;
     }
     final thread = await _readThread(directory, id, strict: true);
+    if (thread == null) {
+      final draft = _draftFile(directory, id);
+      if (await draft.exists()) await draft.delete();
+    }
     await _updateIndex(directory, id, thread?.summary);
     await journal.delete();
   }

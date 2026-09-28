@@ -96,6 +96,24 @@ The linked conversation opens in **Chat**. Continuation uses the server's `last_
 
 Open a linked thread from **On-device**, then use its server-session action to refresh the server transcript and status. This refresh action is disabled while a locally saved turn is server-continuing; use **Check now** instead. Other running sessions show a live note and disable sending until refreshed. Browsing does not subscribe to another client's live output.
 
+## v0.9.0: conversational behavior
+
+### Live response feedback and scrolling
+
+Before the first assistant text arrives, the active turn shows **Agent is working…**. Once text arrives, a static caret is painted at its tail without modifying Markdown, copied text, or code fences. Both indicators disappear when the local stream ends; neither adds a blinking timer or background work.
+
+New turns follow the live response tail, including when it grows beyond the viewport or the keyboard changes the available height. Scrolling manually in either direction, or navigating a chat-search match, detaches follow so incoming text does not move the scroll position. A floating down-arrow appears only while a live turn is detached; tap it to return to the tail and resume following. Saved history keeps its existing newest-first order and lazy rendering.
+
+### Per-conversation drafts
+
+Unsent prompt text is saved locally after a 275 ms typing debounce and flushed on chat changes, leaving the composer, and app lifecycle transitions. Reopening a conversation restores its own draft, including after restarting the app. A new task receives its own local identity before its first send. Attachment selections are not restored after leaving the composer or restarting.
+
+Drafts use separate atomic records, so transcript refreshes and late completed turns cannot overwrite them. Validation and attachment-upload failures retain the text. A send clears its submitted draft before response dispatch, not after the stream ends; cancellation before dispatch restores it without overwriting newer typing. Like transcripts, drafts are plaintext in private app storage and are removed with the local conversation. An immediate process kill before the debounce or lifecycle flush completes can lose the latest keystrokes.
+
+### Message actions
+
+Long-press a user or assistant message for **Copy full text**, **Share**, or **Select text**, in local and linked chats and chat-search results. Copy and Android text sharing use the complete original message source, preserving whitespace and Markdown markers. **Select text** returns to native partial selection; long-pressing a card's non-text area offers a selectable source dialog. Existing code-copy controls, Markdown links, and attachment chips remain available. Text sharing does not publish a server-side share link.
+
 ## v0.8.0: tool timeline and search
 
 ### Tool timeline

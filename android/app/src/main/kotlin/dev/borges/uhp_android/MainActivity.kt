@@ -267,7 +267,7 @@ class MainActivity : FlutterActivity() {
             startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).apply {
                 type = "text/plain"
                 putExtra(Intent.EXTRA_TEXT, text)
-            }, "Share link"))
+            }, "Share text"))
             result.success(null)
         } catch (error: Exception) {
             result.error("share_failed", error.message ?: "Could not share this text.", null)

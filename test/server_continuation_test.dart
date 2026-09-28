@@ -89,6 +89,15 @@ class _Controller extends ServerContinuationController {
   Future<void> checkNow() => lastCheck = super.checkNow();
 }
 
+// Draft hydration starts during pumpWidget; keep its native I/O outside the
+// fake-clock zone so subsequent runAsync recovery is not queued behind it.
+class _Store extends ThreadStore {
+  _Store(Directory directory) : super(() async => directory);
+  @override
+  Future<String> readDraft(String id) =>
+      Zone.root.run(() => super.readDraft(id));
+}
+
 class _Fixture {
   _Fixture(
     this.directory,
@@ -110,7 +119,7 @@ class _Fixture {
     final directory = await Directory.systemTemp.createTemp(
       'server-continuation-',
     );
-    final store = ThreadStore(() async => directory);
+    final store = _Store(directory);
     final alarms = <_Alarm>[];
     final container = ProviderContainer(
       overrides: [

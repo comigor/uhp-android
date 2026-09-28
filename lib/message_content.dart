@@ -2,12 +2,21 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 
+import 'message_actions.dart';
+import 'streaming_caret.dart';
+
 /// Renders assistant output without interpreting prompts or loading resources.
 class MessageContent extends StatelessWidget {
-  const MessageContent({super.key, required this.role, required this.text});
+  const MessageContent({
+    super.key,
+    required this.role,
+    required this.text,
+    this.streaming = false,
+  });
 
   final String role;
   final String text;
+  final bool streaming;
 
   @override
   Widget build(BuildContext context) {
@@ -20,13 +29,17 @@ class MessageContent extends StatelessWidget {
           color: theme.colorScheme.surfaceContainerHighest,
           borderRadius: BorderRadius.circular(8),
         ),
-        child: SelectableText(text),
+        child: SelectableText(
+          text,
+          contextMenuBuilder: MessageActions.editableMenu,
+        ),
       );
     }
     final codeBuilder = _CodeBlockBuilder();
-    return MarkdownBody(
+    final content = MarkdownBody(
       data: text,
       selectable: true,
+      contextMenuBuilder: MessageActions.editableMenu,
       styleSheet: MarkdownStyleSheet.fromTheme(theme).copyWith(
         code: theme.textTheme.bodyMedium?.copyWith(fontFamily: 'monospace'),
         codeblockPadding: EdgeInsets.zero,
@@ -39,8 +52,18 @@ class MessageContent extends StatelessWidget {
       // Untrusted transcripts must never initiate image/file requests.
       imageBuilder: (uri, title, alt) => SelectableText(
         '[Image${alt == null || alt.isEmpty ? '' : ': $alt'}] $uri',
+        contextMenuBuilder: MessageActions.editableMenu,
       ),
     );
+    return streaming
+        ? StreamingCaret(
+            key: const ValueKey('streaming-caret'),
+            style: theme.textTheme.bodyMedium!.copyWith(
+              color: theme.colorScheme.onSurface,
+            ),
+            child: content,
+          )
+        : content;
   }
 }
 
@@ -130,6 +153,7 @@ class _CodeBlock extends StatelessWidget {
             ],
           ),
           SelectionArea(
+            contextMenuBuilder: MessageActions.regionMenu,
             child: SingleChildScrollView(
               scrollDirection: Axis.horizontal,
               child: Text(

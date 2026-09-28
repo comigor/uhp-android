@@ -179,7 +179,8 @@ class TasksScreen extends ConsumerStatefulWidget {
   ConsumerState<TasksScreen> createState() => _TasksScreenState();
 }
 
-class _TasksScreenState extends ConsumerState<TasksScreen> {
+class _TasksScreenState extends ConsumerState<TasksScreen>
+    with WidgetsBindingObserver {
   final _prompt = TextEditingController();
   String? _model;
   Object? _modelScope;
@@ -188,11 +189,87 @@ class _TasksScreenState extends ConsumerState<TasksScreen> {
   late final SessionFilePlatform _filePlatform;
   bool _pickingAttachments = false;
   bool _submitting = false;
+  late final ComposerDraftController _drafts;
+  ConversationThread? _newThread;
+  bool _hydratingDraft = false;
 
   @override
   void initState() {
     super.initState();
     _filePlatform = ref.read(sessionFilePlatformProvider);
+    final messenger = ref.read(appScaffoldMessengerKeyProvider);
+    _drafts = ComposerDraftController(
+      store: ref.read(threadStoreProvider),
+      onHydrated: (text) {
+        if (!mounted) return;
+        _hydratingDraft = true;
+        _prompt.value = TextEditingValue(
+          text: text,
+          selection: TextSelection.collapsed(offset: text.length),
+        );
+        _hydratingDraft = false;
+      },
+      onError: (error) {
+        messenger.currentState?.showSnackBar(SnackBar(content: Text('$error')));
+      },
+    );
+    _prompt.addListener(_promptChanged);
+    WidgetsBinding.instance.addObserver(this);
+    ref.listenManual(threadProvider, (previous, next) {
+      if (previous?.id != next?.id) _newThread = null;
+      _syncDraft();
+    });
+    ref.listenManual(selectedServerProvider, (_, _) => _syncDraft());
+    ref.listenManual(selectedHarnessProvider, (_, _) => _syncDraft());
+    _syncDraft();
+  }
+
+  void _syncDraft() {
+    final thread = ref.read(threadProvider);
+    if (thread != null) {
+      _drafts.bind(thread);
+      return;
+    }
+    final server = ref.read(selectedServerProvider);
+    final harness = ref.read(selectedHarnessProvider);
+    if (server == null || harness == null) {
+      _newThread = null;
+      _drafts.bind(null);
+      return;
+    }
+    if (_newThread?.server.id != server.id ||
+        _newThread?.server.baseUrl != server.baseUrl ||
+        _newThread?.harnessId != harness.id) {
+      final now = DateTime.now().toUtc();
+      _newThread = ConversationThread(
+        id: newLocalId(),
+        title: 'New task',
+        server: server,
+        harnessId: harness.id,
+        harnessName: harness.name,
+        model: harness.defaultModel.isEmpty || harness.defaultModel == '-'
+            ? null
+            : harness.defaultModel,
+        createdAt: now,
+        updatedAt: now,
+        messages: const [],
+      );
+    }
+    _drafts.bind(_newThread, initial: true);
+  }
+
+  void _promptChanged() {
+    if (!_hydratingDraft) _drafts.update(_prompt.text);
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.inactive ||
+        state == AppLifecycleState.paused ||
+        state == AppLifecycleState.hidden ||
+        state == AppLifecycleState.detached) {
+      unawaited(_drafts.flush());
+    }
   }
 
   Future<void> _discardAttachments(List<PickedAttachment> files) async {
@@ -236,9 +313,20 @@ class _TasksScreenState extends ConsumerState<TasksScreen> {
     final runner = ref.read(taskRunnerProvider);
     final messenger = ref.read(appScaffoldMessengerKeyProvider);
     final picked = List<PickedAttachment>.of(_attachments);
+    final draftId = _drafts.threadId;
+    final draftRevision = _drafts.revision;
+    final initialThread = _newThread;
     setState(() => _submitting = true);
     try {
-      await runner.submit(_prompt.text, model: _model, attachments: picked);
+      await runner.submit(
+        _prompt.text,
+        model: _model,
+        attachments: picked,
+        initialThread: initialThread,
+        onAccepted: draftId == null
+            ? null
+            : () => _drafts.clearAccepted(draftId, draftRevision),
+      );
     } catch (error) {
       messenger.currentState?.showSnackBar(SnackBar(content: Text('$error')));
     } finally {
@@ -247,8 +335,7 @@ class _TasksScreenState extends ConsumerState<TasksScreen> {
         setState(() {
           _submitting = false;
           if (recorded) {
-            _attachments.clear();
-            _prompt.clear();
+            _attachments.removeWhere(picked.contains);
           }
         });
       }
@@ -258,6 +345,9 @@ class _TasksScreenState extends ConsumerState<TasksScreen> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    _prompt.removeListener(_promptChanged);
+    _drafts.dispose();
     _prompt.dispose();
     if (!_submitting) {
       unawaited(_discardAttachments(List<PickedAttachment>.of(_attachments)));
@@ -378,8 +468,10 @@ class _TasksScreenState extends ConsumerState<TasksScreen> {
         child: Column(
           children: [
             Text(
-              thread == null
-                  ? 'Harness: ${harness?.name ?? 'none'}'
+              thread == null ||
+                      (thread.serverSessionId == null &&
+                          thread.messages.isEmpty)
+                  ? 'Harness: ${thread?.harnessName ?? harness?.name ?? 'none'}'
                   : '${thread.title} · ${thread.harnessName}',
             ),
             if (thread?.model != null && thread!.model!.isNotEmpty)
@@ -493,7 +585,9 @@ class _TasksScreenState extends ConsumerState<TasksScreen> {
                   onPressed: busy || unsaved || _refreshing
                       ? null
                       : () {
+                          _newThread = null;
                           ref.read(threadProvider.notifier).state = null;
+                          _syncDraft();
                           setState(() => _model = null);
                         },
                   child: const Text('New task'),
@@ -522,59 +616,63 @@ class _TasksScreenState extends ConsumerState<TasksScreen> {
       ),
       messageBuilder: (context, messageIndex, highlights) {
         final message = messages[messageIndex];
-        return Card(
-          child: Padding(
-            padding: const EdgeInsets.all(12),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  message.role,
-                  style: Theme.of(context).textTheme.labelLarge,
-                ),
-                if (highlights == null)
-                  MessageContent(role: message.role, text: message.text)
-                else
-                  _ChatSearchText(text: message.text, highlights: highlights),
-                if (message.role == 'assistant' && message.tools.isNotEmpty)
-                  ToolTimeline(
-                    key: ValueKey((thread?.id, messageIndex)),
-                    tools: message.tools,
+        return MessageActions(
+          text: message.text,
+          onShare: ref.read(sessionFilePlatformProvider).shareText,
+          child: Card(
+            child: Padding(
+              padding: const EdgeInsets.all(12),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    message.role,
+                    style: Theme.of(context).textTheme.labelLarge,
                   ),
-                if (message.attachments.isNotEmpty)
-                  AttachmentChips(attachments: message.attachments),
-                if (thread?.serverSessionId != null &&
-                    message.role == 'assistant' &&
-                    (message.status == TurnStatus.failed ||
-                        message.status == TurnStatus.cancelled))
-                  TextButton.icon(
-                    onPressed: () =>
-                        showSessionFiles(ref, thread!, changed: true),
-                    icon: const Icon(Icons.folder_open),
-                    label: const Text('View files'),
-                  ),
-                if (message.role == 'assistant')
-                  if (message.status == TurnStatus.serverContinuing)
-                    const Chip(
-                      visualDensity: VisualDensity.compact,
-                      label: Text('Server still working…'),
-                    )
+                  if (highlights == null)
+                    MessageContent(role: message.role, text: message.text)
                   else
-                    Text(message.status.name),
-                if (message.error != null)
-                  Text(
-                    message.error!,
-                    style: TextStyle(
-                      color: Theme.of(context).colorScheme.error,
+                    _ChatSearchText(text: message.text, highlights: highlights),
+                  if (message.role == 'assistant' && message.tools.isNotEmpty)
+                    ToolTimeline(
+                      key: ValueKey((thread?.id, messageIndex)),
+                      tools: message.tools,
                     ),
-                  ),
-                if (message.responseId != null)
-                  Text(
-                    'response_id=${message.responseId}',
-                    style: Theme.of(context).textTheme.bodySmall,
-                  ),
-                if (message.usage != null) UsageText(usage: message.usage!),
-              ],
+                  if (message.attachments.isNotEmpty)
+                    AttachmentChips(attachments: message.attachments),
+                  if (thread?.serverSessionId != null &&
+                      message.role == 'assistant' &&
+                      (message.status == TurnStatus.failed ||
+                          message.status == TurnStatus.cancelled))
+                    TextButton.icon(
+                      onPressed: () =>
+                          showSessionFiles(ref, thread!, changed: true),
+                      icon: const Icon(Icons.folder_open),
+                      label: const Text('View files'),
+                    ),
+                  if (message.role == 'assistant')
+                    if (message.status == TurnStatus.serverContinuing)
+                      const Chip(
+                        visualDensity: VisualDensity.compact,
+                        label: Text('Server still working…'),
+                      )
+                    else
+                      Text(message.status.name),
+                  if (message.error != null)
+                    Text(
+                      message.error!,
+                      style: TextStyle(
+                        color: Theme.of(context).colorScheme.error,
+                      ),
+                    ),
+                  if (message.responseId != null)
+                    Text(
+                      'response_id=${message.responseId}',
+                      style: Theme.of(context).textTheme.bodySmall,
+                    ),
+                  if (message.usage != null) UsageText(usage: message.usage!),
+                ],
+              ),
             ),
           ),
         );
@@ -584,7 +682,8 @@ class _TasksScreenState extends ConsumerState<TasksScreen> {
 }
 
 class ActiveTurnCard extends ConsumerWidget {
-  const ActiveTurnCard({super.key});
+  const ActiveTurnCard({super.key, this.tailKey});
+  final Key? tailKey;
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final turn = ref.watch(liveTurnProvider);
@@ -596,13 +695,35 @@ class ActiveTurnCard extends ConsumerWidget {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Text('user', style: Theme.of(context).textTheme.labelLarge),
-            MessageContent(role: 'user', text: turn.input),
+            MessageActions(
+              text: turn.input,
+              onShare: ref.read(sessionFilePlatformProvider).shareText,
+              child: MessageContent(role: 'user', text: turn.input),
+            ),
             if (turn.attachments.isNotEmpty)
               AttachmentChips(attachments: turn.attachments),
             const Divider(),
             Text(turn.stopping ? 'Stopping…' : 'assistant · running'),
-            MessageContent(role: 'assistant', text: turn.progress.text),
+            if (turn.progress.text.isEmpty && !turn.stopping)
+              Text(
+                'Agent is working…',
+                key: const ValueKey('agent-working'),
+                style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                  color: Theme.of(context).colorScheme.onSurfaceVariant,
+                ),
+              )
+            else
+              MessageActions(
+                text: turn.progress.text,
+                onShare: ref.read(sessionFilePlatformProvider).shareText,
+                child: MessageContent(
+                  role: 'assistant',
+                  text: turn.progress.text,
+                  streaming: !turn.stopping && turn.progress.text.isNotEmpty,
+                ),
+              ),
             for (final tool in turn.progress.tools) Text('tool: $tool'),
+            SizedBox(key: tailKey, width: double.infinity, height: 0),
           ],
         ),
       ),

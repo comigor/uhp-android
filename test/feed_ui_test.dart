@@ -31,6 +31,19 @@ const _harnesses = [
 class _Threads extends ThreadStore {
   _Threads() : super(() async => Directory.systemTemp);
   final _threads = <String, ConversationThread>{};
+  final _drafts = <String, String>{};
+  @override
+  Future<String> readDraft(String id) async => _drafts[id] ?? '';
+  @override
+  Future<void> saveDraft(
+    String id,
+    String text, {
+    ConversationThread? initialThread,
+  }) async {
+    if (initialThread != null) _threads.putIfAbsent(id, () => initialThread);
+    _drafts[id] = text;
+  }
+
   @override
   Future<void> save(ConversationThread thread) async {
     _threads[thread.id] = thread;
@@ -295,8 +308,9 @@ void main() {
         await tester.pumpAndSettle();
         await tester.tap(find.widgetWithText(ChoiceChip, 'On-device'));
         await tester.pumpAndSettle();
+        final threadId = container.read(threadProvider)!.id;
         container.read(threadProvider.notifier).state = null;
-        await tester.tap(find.widgetWithText(ListTile, 'New chat'));
+        await tester.tap(find.byKey(ValueKey('thread-$threadId')));
         await tester.pumpAndSettle();
         expect(
           find.text('Default model answer', findRichText: true),

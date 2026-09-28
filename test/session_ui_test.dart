@@ -42,6 +42,15 @@ ConversationThread _thread({String id = 'local', String status = 'done'}) =>
       messages: const [],
     );
 
+// Hydration begins in the widget's fake-clock zone; its disk queue must keep
+// progressing while waitForThreadChange awaits real I/O in runAsync.
+class _Store extends ThreadStore {
+  _Store(Directory directory) : super(() async => directory);
+  @override
+  Future<String> readDraft(String id) =>
+      Zone.root.run(() => super.readDraft(id));
+}
+
 class _SessionSurface extends ConsumerWidget {
   const _SessionSurface();
   @override
@@ -65,9 +74,7 @@ void main() {
     );
     // ThreadStore creates its serialization future in the constructor. Keep
     // that queue in the same real async zone as the disk operations below.
-    final store = await tester.runAsync(
-      () async => ThreadStore(() async => directory!),
-    );
+    final store = await tester.runAsync(() async => _Store(directory!));
     final container = ProviderContainer(
       overrides: [
         httpClientProvider.overrideWithValue(client),

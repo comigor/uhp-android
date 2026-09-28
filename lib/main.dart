@@ -11,6 +11,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'message_content.dart';
+import 'message_actions.dart';
 import 'update_ui.dart';
 import 'updater.dart';
 
@@ -36,6 +37,7 @@ part 'feed_management.dart';
 part 'feed_search.dart';
 part 'chat_search.dart';
 part 'tool_timeline.dart';
+part 'drafts.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
